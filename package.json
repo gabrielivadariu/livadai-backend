@@ -1,0 +1,30 @@
+{
+  "name": "livadai-api",
+  "version": "1.0.0",
+  "description": "LIVADAI backend API (Express + MongoDB)",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "cleanup-file-avatars": "node scripts/cleanup-file-avatars.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "bcryptjs": "^2.4.3",
+    "cloudinary": "^2.4.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "expo": "^54.0.31",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.7.0",
+    "multer": "^1.4.5-lts.1",
+    "node-fetch": "^2.7.0",
+    "nodemailer": "^6.9.14",
+    "stripe": "^16.6.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  }
+}

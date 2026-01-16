@@ -1,0 +1,59 @@
+const mongoose = require("mongoose");
+
+const bookingSchema = new mongoose.Schema(
+  {
+    experience: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Experience",
+      required: true,
+    },
+    explorer: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+    host: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+    quantity: { type: Number, default: 1 },
+    amount: { type: Number }, // stored in minor units (cents)
+    currency: { type: String, default: "eur" },
+    depositAmount: { type: Number, default: 0 }, // minor units
+    depositCurrency: { type: String },
+    attendanceStatus: { type: String, enum: ["PENDING", "CONFIRMED", "NO_SHOW"], default: "PENDING" },
+    date: { type: Date },
+    timeSlot: { type: String },
+    status: {
+      type: String,
+      enum: [
+        "PENDING",
+        "DEPOSIT_PAID",
+        "PAID",
+        "CANCELLED",
+        "REFUNDED",
+        "COMPLETED",
+        "AUTO_COMPLETED",
+        "NO_SHOW",
+        "PENDING_ATTENDANCE",
+        "DISPUTED",
+      ],
+      default: "PENDING",
+    },
+    attendanceConfirmed: { type: Boolean, default: false },
+    reminderSent: { type: Boolean, default: false },
+    completedAt: { type: Date },
+    payoutEligibleAt: { type: Date },
+    disputedAt: { type: Date },
+    disputeReason: {
+      type: String,
+      enum: ["NO_SHOW", "LOW_QUALITY", "SAFETY", "OTHER", null],
+      default: null,
+    },
+    disputeComment: { type: String, maxlength: 300, default: null },
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.model("Booking", bookingSchema);
