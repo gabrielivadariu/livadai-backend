@@ -63,7 +63,9 @@ const register = async (req, res) => {
     });
     if (existing) {
       if (!existing.emailVerified) {
-        await sendEmailVerification(existing);
+        sendEmailVerification(existing).catch((err) => {
+          console.error("Send verification email error:", err?.message || err);
+        });
         return res.status(200).json({ message: "Verification email resent" });
       }
       return res.status(409).json({ message: "Email already registered" });
@@ -84,7 +86,9 @@ const register = async (req, res) => {
       emailVerified: false,
     });
 
-    await sendEmailVerification(user);
+    sendEmailVerification(user).catch((err) => {
+      console.error("Send verification email error:", err?.message || err);
+    });
 
     try {
       const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
