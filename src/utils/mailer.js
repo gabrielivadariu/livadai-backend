@@ -1,5 +1,4 @@
 const nodemailer = require("nodemailer");
-const EmailLog = require("../models/emailLog.model");
 
 let cachedTransporter = null;
 
@@ -102,32 +101,7 @@ const shouldSendEmails = () => {
   return process.env.EMAILS_ENABLED === "true";
 };
 
-const shouldRateLimit = (type) => type !== "report";
-
-const canSendForUser = async (userId) => {
-  if (!userId) return true;
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const count = await EmailLog.countDocuments({ user: userId, createdAt: { $gte: since } });
-  return count < 3;
-};
-
-const logEmail = async ({ type, to, subject, userId }) => {
-  try {
-    await EmailLog.create({ type, to, subject, user: userId || null });
-  } catch (err) {
-    console.error("Email log error", err);
-  }
-};
-
 const sendEmail = async ({ to, subject, html, type, from, replyTo, userId }) => {
-  if (shouldRateLimit(type)) {
-    const allowed = await canSendForUser(userId);
-    if (!allowed) {
-      console.log("Mailer rate limit hit", { userId, type, to, subject });
-      return;
-    }
-  }
-
   const resolvedFrom = resolveFrom({ type, from });
   const resolvedReplyTo = resolveReplyTo({ type, replyTo });
   const finalHtml = ensureFooter(html);
@@ -163,7 +137,6 @@ const sendEmail = async ({ to, subject, html, type, from, replyTo, userId }) => 
       html: finalHtml,
     });
     console.log("Mailer sent:", info?.messageId || info);
-    await logEmail({ type, to, subject, userId });
   } catch (err) {
     console.error("Mailer sendMail error:", err?.message || err);
     throw err;
