@@ -22,7 +22,9 @@ const buildHistory = async (userId) => {
 
   const getMeProfile = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select("name displayName avatar age languages shortBio profilePhoto phoneVerified phone isTrustedParticipant");
+    const user = await User.findById(req.user.id).select(
+      "name displayName avatar age languages shortBio profilePhoto phoneVerified phone isTrustedParticipant city country"
+    );
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const completed = await Booking.countDocuments({ explorer: req.user.id, status: "COMPLETED" });
@@ -30,8 +32,11 @@ const buildHistory = async (userId) => {
     const history = await buildHistory(req.user.id);
     return res.json({
       name: user.displayName || user.name,
+      displayName: user.displayName || user.name,
       profilePhoto: user.profilePhoto || user.avatar,
       age: user.age,
+      city: user.city,
+      country: user.country,
       languages: Array.isArray(user.languages) ? user.languages : [],
       shortBio: user.shortBio,
       phone: user.phone,
@@ -47,9 +52,9 @@ const buildHistory = async (userId) => {
   }
 };
 
-const updateMeProfile = async (req, res) => {
+  const updateMeProfile = async (req, res) => {
   try {
-    const { age, languages, shortBio, profilePhoto, displayName, phone } = req.body;
+    const { age, languages, shortBio, profilePhoto, displayName, phone, city, country } = req.body;
     if (age && (Number(age) < 18 || Number(age) > 99)) {
       return res.status(400).json({ message: "Age must be between 18 and 99" });
     }
@@ -62,6 +67,8 @@ const updateMeProfile = async (req, res) => {
 
     const update = {};
     if (age !== undefined) update.age = Number(age);
+    if (city !== undefined) update.city = city;
+    if (country !== undefined) update.country = country;
     if (languages !== undefined) update.languages = Array.isArray(languages) ? languages : [];
     if (shortBio !== undefined) update.shortBio = shortBio;
     if (profilePhoto !== undefined) {
@@ -85,7 +92,9 @@ const updateMeProfile = async (req, res) => {
   const getPublicProfile = async (req, res) => {
   try {
     const userId = req.params.id;
-    const user = await User.findById(userId).select("name displayName avatar age languages shortBio profilePhoto phoneVerified isTrustedParticipant");
+    const user = await User.findById(userId).select(
+      "name displayName avatar age languages shortBio profilePhoto phoneVerified isTrustedParticipant city country"
+    );
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const completed = await Booking.countDocuments({ explorer: userId, status: "COMPLETED" });
@@ -93,8 +102,11 @@ const updateMeProfile = async (req, res) => {
     const history = await buildHistory(userId);
     return res.json({
       name: user.displayName || user.name,
+      displayName: user.displayName || user.name,
       profilePhoto: user.profilePhoto || user.avatar,
       age: user.age,
+      city: user.city,
+      country: user.country,
       languages: Array.isArray(user.languages) ? user.languages : [],
       shortBio: user.shortBio,
       isTrustedParticipant: !!user.isTrustedParticipant,
