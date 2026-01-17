@@ -22,6 +22,7 @@ router.post("/reset-password", resetPassword);
 router.post("/forgot-password-otp", forgotPasswordOtp);
 router.post("/reset-password-otp", resetPasswordOtp);
 router.post("/verify-email", verifyEmail);
+router.post("/verify-email-code", verifyEmail);
 router.post("/resend-email-verification", resendEmailVerification);
 router.post("/become-host", authenticate, becomeHost);
 router.get("/me", authenticate, getMe);

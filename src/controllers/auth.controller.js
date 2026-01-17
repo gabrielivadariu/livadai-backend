@@ -21,17 +21,11 @@ const sendEmailVerification = async (user) => {
   user.emailVerificationExpires = new Date(Date.now() + 15 * 60 * 1000);
   user.emailVerificationAttempts = 0;
   await user.save();
-  const html = buildBrandedEmail({
-    title: "Verifică adresa de email",
-    intro: "Folosește codul de mai jos pentru a confirma adresa de email și a activa contul tău LIVADAI.",
-    bodyHtml: `
-      <div style="margin:16px 0;padding:14px 16px;background:#ecfeff;border:1px solid #bae6fd;border-radius:10px;text-align:center;">
-        <div style="font-size:32px;font-weight:800;letter-spacing:6px;color:#0f172a;">${otp}</div>
-        <div style="font-size:13px;color:#475569;margin-top:6px;">Codul expiră în 15 minute.</div>
-      </div>
-      <p style="margin:0;font-size:14px;line-height:1.6;color:#475569;">Dacă nu ai creat tu contul, poți ignora acest email.</p>
-    `,
-  });
+  const html = `
+    <div style="font-family:Arial,sans-serif;font-size:32px;font-weight:800;letter-spacing:6px;text-align:center;">
+      ${otp}
+    </div>
+  `;
   try {
     await sendEmail({ to: user.email, subject: "Verificare email – LIVADAI", html, type: "official", userId: user._id });
   } catch (err) {
@@ -66,7 +60,7 @@ const register = async (req, res) => {
         sendEmailVerification(existing).catch((err) => {
           console.error("Send verification email error:", err?.message || err);
         });
-        return res.status(200).json({ message: "Verification email resent" });
+        return res.status(200).json({ message: "Verification email resent", requiresEmailVerification: true });
       }
       return res.status(409).json({ message: "Email already registered" });
     }
@@ -123,6 +117,7 @@ const register = async (req, res) => {
 
     return res.status(201).json({
       message: "User created, verification required",
+      requiresEmailVerification: true,
       user: {
         _id: user._id,
         name: user.name,
