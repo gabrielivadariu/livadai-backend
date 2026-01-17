@@ -101,6 +101,31 @@ const shouldSendEmails = () => {
   return process.env.EMAILS_ENABLED === "true";
 };
 
+const sendWithResend = async ({ from, to, subject, html, replyTo }) => {
+  if (!process.env.RESEND_API_KEY) return false;
+  const payload = {
+    from,
+    to: Array.isArray(to) ? to : [to],
+    subject,
+    html,
+  };
+  if (replyTo) payload.reply_to = replyTo;
+
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Resend API error: ${res.status} ${body}`);
+  }
+  return true;
+};
+
 const sendEmail = async ({ to, subject, html, type, from, replyTo, userId }) => {
   const resolvedFrom = resolveFrom({ type, from });
   const resolvedReplyTo = resolveReplyTo({ type, replyTo });
@@ -115,6 +140,22 @@ const sendEmail = async ({ to, subject, html, type, from, replyTo, userId }) => 
     console.log(finalHtml);
     console.log("=== END MAIL ===");
     return;
+  }
+
+  try {
+    const sent = await sendWithResend({
+      from: resolvedFrom,
+      to,
+      subject,
+      html: finalHtml,
+      replyTo: resolvedReplyTo,
+    });
+    if (sent) {
+      console.log("Mailer sent via Resend");
+      return;
+    }
+  } catch (err) {
+    console.error("Resend sendEmail error:", err?.message || err);
   }
 
   const transporter = getTransporter();
