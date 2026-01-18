@@ -1,5 +1,5 @@
 const jwt = require("jsonwebtoken");
-const { sendMail } = require("./mailer");
+const { sendEmail } = require("./mailer");
 const Booking = require("../models/booking.model");
 const Message = require("../models/message.model");
 
@@ -78,10 +78,11 @@ const sendContentReportEmail = async ({ experience, reporter, reason, comment, r
     ${previewLink ? `<p><a href="${previewLink}">Preview report details</a></p>` : ""}
   `;
   console.log("[REPORT_CONTENT] sending email to", reportsEmail);
-  await sendMail({
+  await sendEmail({
     to: reportsEmail,
     subject,
     html,
+    type: "report",
   });
   console.log("[REPORT_CONTENT] sendMail finished");
 };
@@ -187,10 +188,11 @@ const sendDisputeEmail = async ({ booking, experience, host, explorer, reason, c
     ${previewLink ? `<p><a href="${previewLink}">Preview report details</a></p>` : ""}
   `;
   console.log("[REPORT_DISPUTE] sending email to", reportsEmail);
-  await sendMail({
+  await sendEmail({
     to: reportsEmail,
     subject,
     html,
+    type: "report",
   });
   console.log("[REPORT_DISPUTE] sendMail finished");
 };
@@ -200,7 +202,15 @@ const sendUserReportEmail = async ({ targetUser, reporter, reason, comment, repo
     console.warn("[REPORT_USER] REPORTS_EMAIL missing; skipping email");
     return;
   }
-  const banTargetLink = buildActionLink({ action: "BAN_EXPLORER", explorerId: targetUser?._id, reportId });
+  const role = (targetUser?.role || "").toString().toUpperCase();
+  const isHost = role === "HOST" || role === "BOTH";
+  const banAction = isHost ? "BAN_HOST" : "BAN_EXPLORER";
+  const banTargetLink = buildActionLink({
+    action: banAction,
+    hostId: isHost ? targetUser?._id : undefined,
+    explorerId: !isHost ? targetUser?._id : undefined,
+    reportId,
+  });
   const ignoreLink = buildActionLink({ action: "IGNORE_REPORT", reportId });
   const previewLink = buildPreviewLink({ reportId });
 
@@ -218,16 +228,17 @@ const sendUserReportEmail = async ({ targetUser, reporter, reason, comment, repo
     <hr/>
     <p><strong>Actions (expire in 48h):</strong></p>
     <ul>
-      <li><a href="${banTargetLink}">Ban Explorer</a></li>
+      <li><a href="${banTargetLink}">${isHost ? "Ban Host" : "Ban Explorer"}</a></li>
       <li><a href="${ignoreLink}">Ignore Report</a></li>
     </ul>
     ${previewLink ? `<p><a href="${previewLink}">Preview report details</a></p>` : ""}
   `;
   console.log("[REPORT_USER] sending email to", reportsEmail);
-  await sendMail({
+  await sendEmail({
     to: reportsEmail,
     subject: `[LIVADAI] User report: ${targetUser?.name || targetUser?._id}`,
     html,
+    type: "report",
   });
   console.log("[REPORT_USER] sendMail finished");
 };
