@@ -5,6 +5,8 @@ const stripe = require("../config/stripe");
 const { createNotification } = require("./notifications.controller");
 const mongoose = require("mongoose");
 const User = require("../models/user.model");
+const { sendEmail } = require("../utils/mailer");
+const { buildBookingCancelledEmail } = require("../utils/emailTemplates");
 
 const validateSchedule = (payload) => {
   if (!payload.startsAt || !payload.endsAt) {
@@ -224,7 +226,10 @@ const cancelExperience = async (req, res) => {
     const exp = await Experience.findOne({ _id: req.params.id, host: req.user.id });
     if (!exp) return res.status(404).json({ message: "Experience not found" });
 
-    const bookings = await Booking.find({ experience: exp._id });
+    const bookings = await Booking.find({ experience: exp._id }).populate("explorer", "email name displayName");
+    const hostUser = await User.findById(exp.host).select("email name displayName");
+    const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+    const exploreUrl = `${appUrl.replace(/\/$/, "")}/experiences`;
 
     // Refund paid bookings and notify explorers
     for (const bk of bookings) {
@@ -255,6 +260,26 @@ const cancelExperience = async (req, res) => {
       } catch (err) {
         console.error("Notify cancel booking error", err);
       }
+
+      try {
+        const explorer = bk.explorer;
+        if (explorer?.email) {
+          const html = buildBookingCancelledEmail({
+            experience: exp,
+            bookingId: bk._id,
+            ctaUrl: exploreUrl,
+          });
+          await sendEmail({
+            to: explorer.email,
+            subject: "Experiență anulată",
+            html,
+            type: "booking_cancelled",
+            userId: explorer._id,
+          });
+        }
+      } catch (err) {
+        console.error("Cancel booking email error", err);
+      }
     }
 
     exp.status = "cancelled";
@@ -262,6 +287,24 @@ const cancelExperience = async (req, res) => {
     exp.soldOut = true;
     exp.remainingSpots = 0;
     await exp.save();
+
+    try {
+      if (hostUser?.email) {
+        const html = buildBookingCancelledEmail({
+          experience: exp,
+          ctaUrl: exploreUrl,
+        });
+        await sendEmail({
+          to: hostUser.email,
+          subject: "Experiență anulată",
+          html,
+          type: "booking_cancelled",
+          userId: hostUser._id,
+        });
+      }
+    } catch (err) {
+      console.error("Cancel experience host email error", err);
+    }
 
     return res.json({ success: true, status: "cancelled" });
   } catch (err) {
@@ -315,7 +358,10 @@ const listExperiences = async (req, res) => {
 
 const getExperienceById = async (req, res) => {
   try {
-    const exp = await Experience.findById(req.params.id).populate("host", "name");
+    const exp = await Experience.findById(req.params.id).populate(
+      "host",
+      "name displayName profilePhoto avatar"
+    );
     if (!exp) return res.status(404).json({ message: "Experience not found" });
 
     const isDisabled = exp.isActive === false || exp.status === "DISABLED";
