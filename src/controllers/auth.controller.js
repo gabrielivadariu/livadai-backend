@@ -374,8 +374,8 @@ const buildAuthUser = (user) => ({
   rating_count: user.rating_count,
   displayName: user.displayName,
   display_name: user.display_name,
-  avatar: user.avatar,
-  profilePhoto: user.profilePhoto,
+  avatar: user.avatar || user.profilePhoto || "",
+  profilePhoto: user.avatar || user.profilePhoto || "",
 });
 
 const getMe = async (req, res) => {

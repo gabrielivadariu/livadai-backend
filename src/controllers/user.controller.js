@@ -30,10 +30,12 @@ const buildHistory = async (userId) => {
     const completed = await Booking.countDocuments({ explorer: req.user.id, status: "COMPLETED" });
     const noShows = await Booking.countDocuments({ explorer: req.user.id, status: "NO_SHOW" });
     const history = await buildHistory(req.user.id);
+    const avatar = user.avatar || user.profilePhoto || "";
     return res.json({
       name: user.displayName || user.name,
       displayName: user.displayName || user.name,
-      profilePhoto: user.profilePhoto || user.avatar,
+      avatar,
+      profilePhoto: avatar,
       age: user.age,
       city: user.city,
       country: user.country,
@@ -54,7 +56,7 @@ const buildHistory = async (userId) => {
 
   const updateMeProfile = async (req, res) => {
   try {
-    const { age, languages, shortBio, profilePhoto, displayName, phone, city, country } = req.body;
+    const { age, languages, shortBio, profilePhoto, avatar, displayName, phone, city, country } = req.body;
     if (age && (Number(age) < 18 || Number(age) > 99)) {
       return res.status(400).json({ message: "Age must be between 18 and 99" });
     }
@@ -71,11 +73,14 @@ const buildHistory = async (userId) => {
     if (country !== undefined) update.country = country;
     if (languages !== undefined) update.languages = Array.isArray(languages) ? languages : [];
     if (shortBio !== undefined) update.shortBio = shortBio;
-    if (profilePhoto !== undefined) {
-      if (profilePhoto === "") {
+    const incomingAvatar = avatar !== undefined ? avatar : profilePhoto;
+    if (incomingAvatar !== undefined) {
+      if (incomingAvatar === "") {
+        update.avatar = "";
         update.profilePhoto = "";
-      } else if (typeof profilePhoto === "string" && /^https?:\/\//i.test(profilePhoto)) {
-        update.profilePhoto = profilePhoto;
+      } else if (typeof incomingAvatar === "string" && /^https?:\/\//i.test(incomingAvatar)) {
+        update.avatar = incomingAvatar;
+        update.profilePhoto = incomingAvatar;
       }
     }
     if (displayName !== undefined) update.displayName = displayName;
@@ -100,10 +105,12 @@ const buildHistory = async (userId) => {
     const completed = await Booking.countDocuments({ explorer: userId, status: "COMPLETED" });
     const noShows = await Booking.countDocuments({ explorer: userId, status: "NO_SHOW" });
     const history = await buildHistory(userId);
+    const avatar = user.avatar || user.profilePhoto || "";
     return res.json({
       name: user.displayName || user.name,
       displayName: user.displayName || user.name,
-      profilePhoto: user.profilePhoto || user.avatar,
+      avatar,
+      profilePhoto: avatar,
       age: user.age,
       city: user.city,
       country: user.country,

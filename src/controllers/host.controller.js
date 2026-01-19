@@ -163,6 +163,9 @@ const updateMyProfile = async (req, res) => {
         delete update.avatar;
       }
     }
+    if (update.avatar !== undefined) {
+      update.profilePhoto = update.avatar;
+    }
     // normalize experience description to single field
     if (update.experienceDescription && !update.experience) {
       update.experience = update.experienceDescription;
