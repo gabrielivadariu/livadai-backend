@@ -3,11 +3,21 @@ const Message = require("../models/message.model");
 const Experience = require("../models/experience.model");
 const User = require("../models/user.model");
 const { createNotification } = require("./notifications.controller");
+const Notification = require("../models/notification.model");
+const mongoose = require("mongoose");
+
+const normalizeId = (value) => {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  if (value._id) return value._id.toString();
+  if (value.id) return value.id.toString();
+  return value.toString ? value.toString() : null;
+};
 
 const isParticipant = (booking, userId) => {
-  return (
-    booking.explorer.toString() === userId || booking.host.toString() === userId
-  );
+  const explorerId = normalizeId(booking.explorer);
+  const hostId = normalizeId(booking.host);
+  return explorerId === userId || hostId === userId;
 };
 
 const ensureChatAllowed = (booking) => {
@@ -178,4 +188,34 @@ const listConversations = async (req, res) => {
   }
 };
 
-module.exports = { listMessages, sendMessage, listConversations };
+const unreadMessagesCount = async (req, res) => {
+  try {
+    const count = await Notification.countDocuments({
+      user: req.user.id,
+      type: "MESSAGE_NEW",
+      isRead: false,
+    });
+    return res.json({ count });
+  } catch (err) {
+    console.error("Unread messages count error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const markMessagesRead = async (req, res) => {
+  try {
+    const { bookingId } = req.body || {};
+    const query = { user: req.user.id, type: "MESSAGE_NEW", isRead: false };
+    if (bookingId) {
+      const objId = mongoose.Types.ObjectId.isValid(bookingId) ? new mongoose.Types.ObjectId(bookingId) : null;
+      query["data.bookingId"] = objId ? { $in: [bookingId, objId] } : bookingId;
+    }
+    await Notification.updateMany(query, { $set: { isRead: true } });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("Mark messages read error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+module.exports = { listMessages, sendMessage, listConversations, unreadMessagesCount, markMessagesRead };

@@ -30,7 +30,9 @@ router.get("/:id", authenticate, async (req, res) => {
       .populate("experience", "title startsAt endsAt startDate endDate activityType")
       .populate("explorer", "name displayName profilePhoto avatar phone");
     if (!booking) return res.status(404).json({ message: "Booking not found" });
-    if (booking.host.toString() !== req.user.id && booking.explorer.toString() !== req.user.id) {
+    const hostId = booking.host?._id?.toString?.() || booking.host?.toString?.() || booking.host;
+    const explorerId = booking.explorer?._id?.toString?.() || booking.explorer?.toString?.() || booking.explorer;
+    if (hostId !== req.user.id && explorerId !== req.user.id) {
       return res.status(403).json({ message: "Forbidden" });
     }
     const allowedStatuses = new Set(["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"]);
