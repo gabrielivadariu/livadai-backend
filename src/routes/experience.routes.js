@@ -9,7 +9,7 @@ const {
   getExperiencesMap,
   cancelExperience,
 } = require("../controllers/experience.controller");
-const { authenticate, authorize } = require("../middleware/auth.middleware");
+const { authenticate, optionalAuthenticate, authorize } = require("../middleware/auth.middleware");
 
 const router = Router();
 
@@ -22,7 +22,7 @@ router.post("/:id/cancel", authenticate, authorize(["HOST"]), cancelExperience);
 
 // Explorer/public
 router.get("/map", getExperiencesMap);
-router.get("/:id", getExperienceById);
+router.get("/:id", optionalAuthenticate, getExperienceById);
 router.get("/", listExperiences);
 
 module.exports = router;

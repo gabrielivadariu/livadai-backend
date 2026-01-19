@@ -366,6 +366,17 @@ const getExperienceById = async (req, res) => {
 
     const isDisabled = exp.isActive === false || exp.status === "DISABLED";
     if (isDisabled) {
+      if (req.user?.id) {
+        const allowedStatuses = ["PAID", "DEPOSIT_PAID", "COMPLETED", "PENDING_ATTENDANCE"];
+        const hasBooking = await Booking.findOne({
+          experience: exp._id,
+          status: { $in: allowedStatuses },
+          $or: [{ explorer: req.user.id }, { host: req.user.id }],
+        }).select("_id");
+        if (hasBooking) {
+          return res.json(exp.toObject());
+        }
+      }
       return res.status(404).json({ message: "Experience not found" });
     }
 
