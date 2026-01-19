@@ -362,20 +362,9 @@ const verifyEmail = async (req, res) => {
 
 const buildAuthUser = (user) => ({
   _id: user._id,
-  name: user.name,
   email: user.email,
   role: user.role,
-  isHost: user.isHost,
-  stripeAccountId: user.stripeAccountId,
-  isStripeChargesEnabled: user.isStripeChargesEnabled,
-  isStripePayoutsEnabled: user.isStripePayoutsEnabled,
-  isStripeDetailsSubmitted: user.isStripeDetailsSubmitted,
-  rating_avg: user.rating_avg,
-  rating_count: user.rating_count,
-  displayName: user.displayName,
-  display_name: user.display_name,
   avatar: user.avatar || user.profilePhoto || "",
-  profilePhoto: user.avatar || user.profilePhoto || "",
 });
 
 const getMe = async (req, res) => {

@@ -31,9 +31,10 @@ const buildHistory = async (userId) => {
     const noShows = await Booking.countDocuments({ explorer: req.user.id, status: "NO_SHOW" });
     const history = await buildHistory(req.user.id);
     const avatar = user.avatar || user.profilePhoto || "";
+    const displayName = user.displayName || user.display_name || user.name;
     return res.json({
-      name: user.displayName || user.name,
-      displayName: user.displayName || user.name,
+      name: displayName || user.name,
+      displayName: displayName || user.name,
       avatar,
       profilePhoto: avatar,
       age: user.age,
@@ -72,7 +73,10 @@ const buildHistory = async (userId) => {
     if (city !== undefined) update.city = city;
     if (country !== undefined) update.country = country;
     if (languages !== undefined) update.languages = Array.isArray(languages) ? languages : [];
-    if (shortBio !== undefined) update.shortBio = shortBio;
+    if (shortBio !== undefined) {
+      update.shortBio = shortBio;
+      update.about_me = shortBio;
+    }
     const incomingAvatar = avatar !== undefined ? avatar : profilePhoto;
     if (incomingAvatar !== undefined) {
       if (incomingAvatar === "") {
@@ -83,7 +87,10 @@ const buildHistory = async (userId) => {
         update.profilePhoto = incomingAvatar;
       }
     }
-    if (displayName !== undefined) update.displayName = displayName;
+    if (displayName !== undefined) {
+      update.displayName = displayName;
+      update.display_name = displayName;
+    }
     if (phone !== undefined) update.phone = phone;
 
     await User.findByIdAndUpdate(req.user.id, update);
@@ -106,9 +113,10 @@ const buildHistory = async (userId) => {
     const noShows = await Booking.countDocuments({ explorer: userId, status: "NO_SHOW" });
     const history = await buildHistory(userId);
     const avatar = user.avatar || user.profilePhoto || "";
+    const displayName = user.displayName || user.display_name || user.name;
     return res.json({
-      name: user.displayName || user.name,
-      displayName: user.displayName || user.name,
+      name: displayName || user.name,
+      displayName: displayName || user.name,
       avatar,
       profilePhoto: avatar,
       age: user.age,

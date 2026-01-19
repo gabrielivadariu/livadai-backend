@@ -173,6 +173,31 @@ const updateMyProfile = async (req, res) => {
     if (update.experience && !update.experienceDescription) {
       update.experienceDescription = update.experience;
     }
+    const userUpdate = {};
+    if (update.display_name !== undefined) {
+      userUpdate.displayName = update.display_name;
+      userUpdate.display_name = update.display_name;
+    }
+    if (update.name !== undefined) userUpdate.name = update.name;
+    if (update.city !== undefined) userUpdate.city = update.city;
+    if (update.country !== undefined) userUpdate.country = update.country;
+    if (update.languages !== undefined) userUpdate.languages = update.languages;
+    if (update.age !== undefined) userUpdate.age = update.age;
+    if (update.phone !== undefined) userUpdate.phone = update.phone;
+    if (update.about_me !== undefined) {
+      userUpdate.about_me = update.about_me;
+      userUpdate.shortBio = update.about_me;
+    }
+    if (update.avatar !== undefined) {
+      userUpdate.avatar = update.avatar;
+      userUpdate.profilePhoto = update.avatar;
+    }
+    if (update.experience !== undefined) userUpdate.experience = update.experience;
+
+    if (Object.keys(userUpdate).length) {
+      await User.findByIdAndUpdate(req.user.id, userUpdate);
+    }
+
     const user = await User.findByIdAndUpdate(req.user.id, update, { new: true }).select(
       "name display_name city country languages about_me age avatar phone experience"
     );
