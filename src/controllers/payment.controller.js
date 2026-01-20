@@ -4,6 +4,8 @@ const Booking = require("../models/booking.model");
 const Experience = require("../models/experience.model");
 const Payment = require("../models/payment.model");
 const { createNotification } = require("./notifications.controller");
+const { sendEmail } = require("../utils/mailer");
+const { buildBookingConfirmedEmail } = require("../utils/emailTemplates");
 const User = require("../models/user.model");
 
 // New checkout flow: experienceId + quantity
@@ -69,6 +71,9 @@ const createCheckout = async (req, res) => {
       status: "PENDING",
     });
 
+    const baseUrl = process.env.FRONTEND_URL || process.env.APP_URL || "https://app.livadai.com";
+    const successUrl = `${baseUrl.replace(/\/$/, "")}/payment-success?session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${baseUrl.replace(/\/$/, "")}/payment-cancel`;
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: ["card"],
@@ -82,13 +87,14 @@ const createCheckout = async (req, res) => {
           quantity: qty,
         },
       ],
-      success_url: "http://localhost:3000/payment-success?session_id={CHECKOUT_SESSION_ID}",
-      cancel_url: "http://localhost:3000/payment-cancel",
+      success_url: successUrl,
+      cancel_url: cancelUrl,
       metadata: {
         bookingId: booking._id.toString(),
         experienceId: exp._id.toString(),
         explorerId: (req.user?._id || req.user?.id)?.toString(),
         quantity: qty.toString(),
+        isDeposit: isFree ? "true" : "false",
       },
     });
 
@@ -183,6 +189,49 @@ const handlePaymentSuccess = async ({ bookingId, paymentIntentId, sessionId, isD
     }
   } catch (err) {
     console.error("Notification booking success error", err);
+  }
+
+  // Email: explorer + host
+  try {
+    const explorer = await User.findById(booking.explorer);
+    const host = await User.findById(booking.host);
+    const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+    const explorerBookingsLink = `${appUrl.replace(/\/$/, "")}/my-activities`;
+    const hostBookingsLink = `${appUrl.replace(/\/$/, "")}/profile`;
+
+    if (explorer?.email) {
+      const html = buildBookingConfirmedEmail({
+        experience: exp,
+        bookingId: booking._id,
+        ctaUrl: explorerBookingsLink,
+        role: "explorer",
+      });
+      await sendEmail({
+        to: explorer.email,
+        subject: "Booking confirmat / Booking confirmed – LIVADAI",
+        html,
+        type: "booking_explorer",
+        userId: explorer._id,
+      });
+    }
+
+    if (host?.email) {
+      const html = buildBookingConfirmedEmail({
+        experience: exp,
+        bookingId: booking._id,
+        ctaUrl: hostBookingsLink,
+        role: "host",
+      });
+      await sendEmail({
+        to: host.email,
+        subject: "Rezervare nouă / New booking – LIVADAI",
+        html,
+        type: "booking_host",
+        userId: host._id,
+      });
+    }
+  } catch (err) {
+    console.error("Booking email error", err);
   }
 };
 

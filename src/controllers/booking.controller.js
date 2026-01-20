@@ -6,7 +6,8 @@ const User = require("../models/user.model");
 const Payment = require("../models/payment.model");
 const stripe = require("../config/stripe");
 const jwt = require("jsonwebtoken");
-const { sendMail } = require("../utils/mailer");
+const { sendEmail } = require("../utils/mailer");
+const { buildDisputeOpenedEmail } = require("../utils/emailTemplates");
 const { isPayoutEligible, logPayoutAttempt } = require("../utils/payout");
 const { sendContentReportEmail, sendDisputeEmail, sendUserReportEmail } = require("../utils/reports");
 const { recalcTrustedParticipant } = require("../utils/trust");
@@ -324,6 +325,25 @@ const disputeBooking = async (req, res) => {
       });
     } catch (err) {
       console.error("Notify dispute error", err);
+    }
+    try {
+      const hostUser = await User.findById(booking.host).select("email");
+      const experience = await Experience.findById(booking.experience);
+      if (hostUser?.email) {
+        const html = buildDisputeOpenedEmail({
+          experience,
+          bookingId: booking._id,
+        });
+        await sendEmail({
+          to: hostUser.email,
+          subject: "Dispută deschisă / Dispute opened – LIVADAI",
+          html,
+          type: "official",
+          userId: hostUser._id,
+        });
+      }
+    } catch (err) {
+      console.error("Dispute host email error", err);
     }
 
     return res.json({ success: true, status: booking.status });

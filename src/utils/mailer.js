@@ -2,7 +2,8 @@ const nodemailer = require("nodemailer");
 
 let cachedTransporter = null;
 
-const BRAND_COLOR = "#06b6d4";
+const BRAND_COLOR = "#00bcd4";
+const ACCENT_COLOR = "#16a34a";
 const FOOTER_MARKER = "<!-- LIVADAI_FOOTER -->";
 
 const getTransporter = () => {
@@ -49,11 +50,12 @@ const buildFooterHtml = () => {
   const privacyUrl = process.env.PRIVACY_URL || "https://livadai.com/privacy";
   return `
     ${FOOTER_MARKER}
-    <div style="margin-top:18px;padding-top:14px;border-top:1px solid #e5e7eb;font-size:12px;color:#94a3b8;">
-      <div>Ai nevoie de ajutor? <a href="mailto:${process.env.SUPPORT_EMAIL || "support@livadai.com"}" style="color:#0ea5a6;text-decoration:none;">${process.env.SUPPORT_EMAIL || "support@livadai.com"}</a></div>
-      <div style="margin-top:6px;">
-        <a href="${termsUrl}" style="color:#0ea5a6;text-decoration:none;">Terms</a> ·
-        <a href="${privacyUrl}" style="color:#0ea5a6;text-decoration:none;">Privacy</a>
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:12px;color:#94a3b8;">
+      <div>Ai nevoie de ajutor? <a href="mailto:${process.env.SUPPORT_EMAIL || "support@livadai.com"}" style="color:${BRAND_COLOR};text-decoration:none;">${process.env.SUPPORT_EMAIL || "support@livadai.com"}</a></div>
+      <div style="margin-top:6px;">Need help? <a href="mailto:${process.env.SUPPORT_EMAIL || "support@livadai.com"}" style="color:${BRAND_COLOR};text-decoration:none;">${process.env.SUPPORT_EMAIL || "support@livadai.com"}</a></div>
+      <div style="margin-top:8px;">
+        <a href="${termsUrl}" style="color:${BRAND_COLOR};text-decoration:none;">Termeni</a> ·
+        <a href="${privacyUrl}" style="color:${BRAND_COLOR};text-decoration:none;">Confidențialitate</a>
       </div>
       <div style="margin-top:6px;">© LIVADAI</div>
     </div>
@@ -66,23 +68,26 @@ const ensureFooter = (html) => {
   return `${html}${buildFooterHtml()}`;
 };
 
-const buildBrandedEmail = ({ title, intro, bodyHtml, ctaLabel, ctaUrl, footer }) => {
-  const introHtml = intro ? `<p style="margin:0 0 14px 0;font-size:15px;line-height:1.6;color:#334155;">${intro}</p>` : "";
-  const ctaHtml = ctaLabel && ctaUrl
-    ? `<p style="margin:18px 0 6px 0;"><a href="${ctaUrl}" style="display:inline-block;padding:12px 18px;background:${BRAND_COLOR};color:#ffffff;border-radius:10px;text-decoration:none;font-weight:700;">${ctaLabel}</a></p>`
-    : "";
+const buildBrandedEmail = ({ title, intro, bodyHtml, ctaLabel, ctaUrl, footer, ctaColor, headerSubtitle }) => {
+  const introHtml = intro ? `<p style="margin:0 0 14px 0;font-size:15px;line-height:1.7;color:#334155;">${intro}</p>` : "";
+  const resolvedCtaColor = ctaColor || BRAND_COLOR;
+  const ctaHtml =
+    ctaLabel && ctaUrl
+      ? `<p style="margin:18px 0 6px 0;"><a href="${ctaUrl}" style="display:inline-block;padding:12px 20px;background:${resolvedCtaColor};color:#ffffff;border-radius:999px;text-decoration:none;font-weight:700;letter-spacing:0.2px;">${ctaLabel}</a></p>`
+      : "";
   const footerHtml = footer ? `<p style="margin:18px 0 0 0;font-size:12px;color:#94a3b8;">${footer}</p>` : "";
+  const sub = headerSubtitle || "Experiențe reale, oameni reali";
   return `
-    <div style="background:#f3f4f6;padding:24px 12px;font-family:Arial,sans-serif;">
-      <table align="center" style="max-width:560px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+    <div style="background:#f5f7fb;padding:26px 12px;font-family:Arial,sans-serif;">
+      <table align="center" style="max-width:560px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 12px 30px rgba(15,23,42,0.08);">
         <tr>
-          <td style="background:${BRAND_COLOR};color:#ffffff;text-align:center;padding:18px 12px;">
+          <td style="background:${BRAND_COLOR};color:#ffffff;text-align:center;padding:20px 12px;">
             <div style="font-size:22px;font-weight:800;letter-spacing:1px;">LIVADAI</div>
-            <div style="font-size:12px;opacity:0.9;margin-top:4px;">Explorers & Hosts</div>
+            <div style="font-size:12px;opacity:0.9;margin-top:4px;">${sub}</div>
           </td>
         </tr>
         <tr>
-          <td style="padding:22px 24px;color:#0f172a;">
+          <td style="padding:24px 26px;color:#0f172a;">
             <h2 style="margin:0 0 10px 0;font-size:20px;font-weight:800;color:#0f172a;">${title}</h2>
             ${introHtml}
             ${bodyHtml || ""}

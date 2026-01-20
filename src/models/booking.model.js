@@ -43,6 +43,7 @@ const bookingSchema = new mongoose.Schema(
     },
     attendanceConfirmed: { type: Boolean, default: false },
     reminderSent: { type: Boolean, default: false },
+    attendanceReminderEmailSent: { type: Boolean, default: false },
     completedAt: { type: Date },
     payoutEligibleAt: { type: Date },
     disputedAt: { type: Date },

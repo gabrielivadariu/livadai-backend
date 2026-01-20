@@ -2,7 +2,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/user.model");
 const crypto = require("crypto");
-const { sendEmail, buildBrandedEmail } = require("../utils/mailer");
+const { sendEmail } = require("../utils/mailer");
+const { buildEmailVerificationEmail, buildWelcomeEmail, buildPasswordResetEmail } = require("../utils/emailTemplates");
 
 const signToken = (user) => {
   return jwt.sign(
@@ -21,13 +22,15 @@ const sendEmailVerification = async (user) => {
   user.emailVerificationExpires = new Date(Date.now() + 15 * 60 * 1000);
   user.emailVerificationAttempts = 0;
   await user.save();
-  const html = `
-    <div style="font-family:Arial,sans-serif;font-size:32px;font-weight:800;letter-spacing:6px;text-align:center;">
-      ${otp}
-    </div>
-  `;
+  const html = buildEmailVerificationEmail({ code: otp, expiresMinutes: 15 });
   try {
-    await sendEmail({ to: user.email, subject: "Verificare email – LIVADAI", html, type: "official", userId: user._id });
+    await sendEmail({
+      to: user.email,
+      subject: "Verificare email / Verify email – LIVADAI",
+      html,
+      type: "official",
+      userId: user._id,
+    });
   } catch (err) {
     console.error("Send verification email error", err);
   }
@@ -86,29 +89,12 @@ const register = async (req, res) => {
 
     try {
       const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
-      const isHost = user.role === "HOST" || user.isHost;
-      const html = buildBrandedEmail({
-        title: "Bine ai venit pe LIVADAI 🌿",
-        intro: isHost
-          ? "LIVADAI este comunitatea unde îți poți monetiza experiențele și întâlni oameni care apreciază autenticitatea."
-          : "LIVADAI este locul unde descoperi experiențe autentice, oameni reali și locuri speciale.",
-        bodyHtml: isHost
-          ? `
-            <p style="margin:0 0 8px 0;font-size:15px;line-height:1.6;color:#334155;">Publică prima experiență și începe să primești rezervări rapid.</p>
-            <p style="margin:0;font-size:15px;line-height:1.6;color:#334155;">Construim o comunitate bazată pe încredere și calitate.</p>
-          `
-          : `
-            <p style="margin:0 0 8px 0;font-size:15px;line-height:1.6;color:#334155;">Explorează activități locale și alege experiențe create de hosts pasionați.</p>
-            <p style="margin:0;font-size:15px;line-height:1.6;color:#334155;">Poți deveni host oricând și să îți creezi propriile experiențe.</p>
-          `,
-        ctaLabel: isHost ? "Creează prima experiență" : "Descoperă experiențe",
-        ctaUrl: appUrl,
-      });
+      const html = buildWelcomeEmail({ ctaUrl: appUrl });
       await sendEmail({
         to: user.email,
-        subject: "Bine ai venit pe LIVADAI 🌿",
+        subject: "Bine ai venit / Welcome – LIVADAI",
         html,
-        type: isHost ? "welcome_host" : "welcome_explorer",
+        type: "welcome_explorer",
         userId: user._id,
       });
     } catch (err) {
@@ -184,18 +170,11 @@ const forgotPassword = async (req, res) => {
     const frontendUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
     const normalizedFront = frontendUrl.replace(/\/$/, "");
     const resetLink = `${normalizedFront}/reset-password?token=${token}`;
-    const html = buildBrandedEmail({
-      title: "Resetare parolă",
-      intro: "Ai solicitat resetarea parolei pentru contul tău LIVADAI.",
-      bodyHtml: `<p style="margin:0;font-size:15px;line-height:1.6;color:#334155;">Link-ul expiră în 30 de minute.</p>`,
-      ctaLabel: "Resetează parola",
-      ctaUrl: resetLink,
-      footer: "Dacă nu ai solicitat tu această resetare, poți ignora acest email.",
-    });
+    const html = buildPasswordResetEmail({ resetUrl: resetLink });
     try {
       await sendEmail({
         to: user.email,
-        subject: "Resetare parolă – LIVADAI",
+        subject: "Resetare parolă / Password reset – LIVADAI",
         html,
         type: "official",
         userId: user._id,
@@ -260,21 +239,11 @@ const forgotPasswordOtp = async (req, res) => {
     user.resetPasswordExpires = undefined;
     await user.save();
 
-    const html = buildBrandedEmail({
-      title: "Cod resetare parolă",
-      intro: "Ai solicitat resetarea parolei pentru contul tău LIVADAI. Folosește codul de mai jos pentru a continua.",
-      bodyHtml: `
-        <div style="margin:16px 0;padding:14px 16px;background:#ecfeff;border:1px solid #bae6fd;border-radius:10px;text-align:center;">
-          <div style="font-size:32px;font-weight:800;letter-spacing:6px;color:#0f172a;">${otp}</div>
-          <div style="font-size:13px;color:#475569;margin-top:6px;">Codul expiră în ${OTP_EXPIRE_MIN} minute.</div>
-        </div>
-      `,
-      footer: "Dacă nu ai solicitat tu această resetare, poți ignora acest email.",
-    });
+    const html = buildPasswordResetEmail({ code: otp });
     try {
       await sendEmail({
         to: user.email,
-        subject: "Cod resetare parolă – LIVADAI",
+        subject: "Cod resetare / Reset code – LIVADAI",
         html,
         type: "official",
         userId: user._id,

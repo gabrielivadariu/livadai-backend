@@ -1,6 +1,9 @@
 const Booking = require("../models/booking.model");
 const Experience = require("../models/experience.model");
 const { createNotification } = require("../controllers/notifications.controller");
+const { sendEmail } = require("../utils/mailer");
+const { buildAttendanceReminderEmail } = require("../utils/emailTemplates");
+const User = require("../models/user.model");
 
 const setupAttendanceJob = () => {
   setInterval(async () => {
@@ -67,6 +70,32 @@ const setupAttendanceJob = () => {
               message: `Please confirm attendance for "${bk.experience.title}" within 48h after it ends.`,
               data: { bookingId: bk._id, activityId: bk.experience._id, activityTitle: bk.experience.title },
             });
+
+            if (!bk.attendanceReminderEmailSent) {
+              try {
+                const hostUser = await User.findById(bk.experience.host).select("email");
+                if (hostUser?.email) {
+                  const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+                  const hostBookingsUrl = `${appUrl.replace(/\/$/, "")}/host/bookings`;
+                  const html = buildAttendanceReminderEmail({
+                    experience: bk.experience,
+                    bookingId: bk._id,
+                    ctaUrl: hostBookingsUrl,
+                  });
+                  await sendEmail({
+                    to: hostUser.email,
+                    subject: "Confirmă prezența / Confirm attendance – LIVADAI",
+                    html,
+                    type: "official",
+                    userId: hostUser._id,
+                  });
+                  bk.attendanceReminderEmailSent = true;
+                  await bk.save();
+                }
+              } catch (err) {
+                console.error("Attendance reminder email error", err);
+              }
+            }
           }
         }
       }

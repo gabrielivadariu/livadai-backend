@@ -1,6 +1,9 @@
 const Experience = require("../models/experience.model");
 const Booking = require("../models/booking.model");
+const User = require("../models/user.model");
 const { createNotification } = require("../controllers/notifications.controller");
+const { sendEmail } = require("../utils/mailer");
+const { buildBookingReminderEmail } = require("../utils/emailTemplates");
 
 // Runs every 15 minutes to send reminder notifications 24h before start
 const setupReminderJob = () => {
@@ -15,6 +18,9 @@ const setupReminderJob = () => {
       }).select("_id title host startsAt reminderHostSent");
 
       for (const exp of exps) {
+        const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+        const explorerBookingsUrl = `${appUrl.replace(/\/$/, "")}/my-activities`;
+        const hostBookingsUrl = `${appUrl.replace(/\/$/, "")}/profile`;
         // Host reminder (only once)
         if (!exp.reminderHostSent) {
           await createNotification({
@@ -24,14 +30,32 @@ const setupReminderJob = () => {
             message: `"${exp.title}" starts in 24 hours.`,
             data: { activityId: exp._id, activityTitle: exp.title },
           });
+          try {
+            const hostUser = await User.findById(exp.host).select("email name displayName");
+            if (hostUser?.email) {
+              const html = buildBookingReminderEmail({
+                experience: exp,
+                ctaUrl: hostBookingsUrl,
+              });
+              await sendEmail({
+                to: hostUser.email,
+                subject: "Reminder / Reminder – LIVADAI",
+                html,
+                type: "booking_reminder",
+                userId: hostUser._id,
+              });
+            }
+          } catch (err) {
+            console.error("Host reminder email error", err);
+          }
           exp.reminderHostSent = true;
           await exp.save();
         }
 
         // Explorer reminders
-        const bookings = await Booking.find({ experience: exp._id, status: "PAID", reminderSent: { $ne: true } }).select(
-          "explorer reminderSent"
-        );
+        const bookings = await Booking.find({ experience: exp._id, status: "PAID", reminderSent: { $ne: true } })
+          .select("explorer reminderSent")
+          .populate("explorer", "email name displayName");
         for (const bk of bookings) {
           await createNotification({
             user: bk.explorer,
@@ -40,6 +64,25 @@ const setupReminderJob = () => {
             message: `"${exp.title}" starts in 24 hours.`,
             data: { activityId: exp._id, bookingId: bk._id, activityTitle: exp.title },
           });
+          try {
+            const explorer = bk.explorer;
+            if (explorer?.email) {
+              const html = buildBookingReminderEmail({
+                experience: exp,
+                bookingId: bk._id,
+                ctaUrl: explorerBookingsUrl,
+              });
+              await sendEmail({
+                to: explorer.email,
+                subject: "Reminder / Reminder – LIVADAI",
+                html,
+                type: "booking_reminder",
+                userId: explorer._id,
+              });
+            }
+          } catch (err) {
+            console.error("Explorer reminder email error", err);
+          }
           bk.reminderSent = true;
           await bk.save();
         }

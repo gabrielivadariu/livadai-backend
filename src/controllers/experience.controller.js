@@ -283,6 +283,7 @@ const cancelExperience = async (req, res) => {
             experience: exp,
             bookingId: bk._id,
             ctaUrl: exploreUrl,
+            role: "explorer",
           });
           await sendEmail({
             to: explorer.email,
@@ -308,6 +309,7 @@ const cancelExperience = async (req, res) => {
         const html = buildBookingCancelledEmail({
           experience: exp,
           ctaUrl: exploreUrl,
+          role: "host",
         });
         await sendEmail({
           to: hostUser.email,

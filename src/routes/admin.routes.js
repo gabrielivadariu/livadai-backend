@@ -8,6 +8,8 @@ const Payment = require("../models/payment.model");
 const stripe = require("../config/stripe");
 const { createNotification } = require("../controllers/notifications.controller");
 const { recalcTrustedParticipant } = require("../utils/trust");
+const { sendEmail } = require("../utils/mailer");
+const { buildBookingCancelledEmail } = require("../utils/emailTemplates");
 
 const router = Router();
 
@@ -105,9 +107,49 @@ const applyDisableExperience = async (experienceId) => {
   const bookings = await Booking.find({
     experience: experienceId,
     status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"] },
-  });
+  }).populate("explorer", "email name displayName");
+  const hostUser = await User.findById(exp.host).select("email name displayName");
+  const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+  const exploreUrl = `${appUrl.replace(/\/$/, "")}/experiences`;
   for (const b of bookings) {
     await refundBooking(b, "Experience disabled by admin");
+    try {
+      if (b.explorer?.email) {
+        const html = buildBookingCancelledEmail({
+          experience: exp,
+          bookingId: b._id,
+          ctaUrl: exploreUrl,
+          role: "explorer",
+        });
+        await sendEmail({
+          to: b.explorer.email,
+          subject: "Experiență anulată",
+          html,
+          type: "booking_cancelled",
+          userId: b.explorer._id,
+        });
+      }
+    } catch (err) {
+      console.error("Disable experience email error", err);
+    }
+  }
+  try {
+    if (hostUser?.email) {
+      const html = buildBookingCancelledEmail({
+        experience: exp,
+        ctaUrl: exploreUrl,
+        role: "host",
+      });
+      await sendEmail({
+        to: hostUser.email,
+        subject: "Experiență anulată",
+        html,
+        type: "booking_cancelled",
+        userId: hostUser._id,
+      });
+    }
+  } catch (err) {
+    console.error("Disable experience host email error", err);
   }
   await Booking.updateMany(
     { experience: experienceId, status: { $in: ["PENDING", "CANCELLED", "REFUNDED"] } },
