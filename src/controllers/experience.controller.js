@@ -9,13 +9,26 @@ const { sendEmail } = require("../utils/mailer");
 const { buildBookingCancelledEmail } = require("../utils/emailTemplates");
 
 const validateSchedule = (payload) => {
-  if (!payload.startsAt || !payload.endsAt) {
-    return "startsAt and endsAt are required";
+  if (!payload.startsAt) {
+    return "startsAt is required";
   }
   const start = new Date(payload.startsAt);
-  const end = new Date(payload.endsAt);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    return "Invalid date format for startsAt/endsAt";
+  if (Number.isNaN(start.getTime())) {
+    return "Invalid date format for startsAt";
+  }
+  let end = payload.endsAt ? new Date(payload.endsAt) : null;
+  if (end && Number.isNaN(end.getTime())) {
+    return "Invalid date format for endsAt";
+  }
+  const duration = payload.durationMinutes ? Number(payload.durationMinutes) : null;
+  if (!end && duration) {
+    if (Number.isNaN(duration) || duration <= 0) {
+      return "durationMinutes must be a positive number";
+    }
+    end = new Date(start.getTime() + duration * 60 * 1000);
+  }
+  if (!end) {
+    return "endsAt or durationMinutes is required";
   }
   if (end < start) {
     return "endsAt must be after startsAt";
@@ -161,14 +174,16 @@ const updateExperience = async (req, res) => {
     if (update.currencyCode && update.currencyCode !== "RON") {
       update.currencyCode = "RON";
     }
-    if (update.startsAt || update.endsAt) {
-      const scheduleError = validateSchedule({
+    if (update.startsAt || update.endsAt || update.durationMinutes) {
+      const schedulePayload = {
         startsAt: update.startsAt || update.startDate,
         endsAt: update.endsAt || update.endDate,
-      });
+        durationMinutes: update.durationMinutes,
+      };
+      const scheduleError = validateSchedule(schedulePayload);
       if (scheduleError) return res.status(400).json({ message: scheduleError });
-      update.startsAt = new Date(update.startsAt || update.startDate);
-      update.endsAt = new Date(update.endsAt || update.endDate);
+      update.startsAt = schedulePayload.startsAt;
+      update.endsAt = schedulePayload.endsAt;
       update.startDate = update.startsAt;
       update.endDate = update.endsAt;
       update.startTime = update.startsAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
