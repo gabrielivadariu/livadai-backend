@@ -14,9 +14,32 @@ const setupAttendanceJob = () => {
 
       for (const bk of bookings) {
         const expEnd = bk.experience?.endsAt || bk.experience?.endDate;
-        if (!expEnd) continue;
-        const endDate = new Date(expEnd);
-        if (Number.isNaN(endDate.getTime())) continue;
+        const expStart = bk.experience?.startsAt || bk.experience?.startDate;
+        const durationMinutes = bk.experience?.durationMinutes;
+        const startDate = expStart ? new Date(expStart) : null;
+        let endDate = expEnd ? new Date(expEnd) : null;
+        if (!endDate && startDate && durationMinutes) {
+          if (!Number.isNaN(startDate.getTime())) {
+            endDate = new Date(startDate.getTime() + Number(durationMinutes) * 60 * 1000);
+          }
+        }
+        if (!endDate && startDate) {
+          if (!Number.isNaN(startDate.getTime())) {
+            // If duration is unknown, assume 24h after start as end time.
+            endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
+          }
+        }
+        let hardDeadline = null;
+        if (startDate && !Number.isNaN(startDate.getTime())) {
+          hardDeadline = new Date(startDate.getTime() + 7 * 24 * 60 * 60 * 1000);
+        } else if (bk.createdAt) {
+          hardDeadline = new Date(new Date(bk.createdAt).getTime() + 7 * 24 * 60 * 60 * 1000);
+        }
+        if (!endDate || Number.isNaN(endDate.getTime())) {
+          endDate = hardDeadline;
+        }
+        if (!endDate || Number.isNaN(endDate.getTime())) continue;
+
         if (endDate < cutoff) {
           // auto-complete
           bk.status = "AUTO_COMPLETED";
