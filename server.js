@@ -24,6 +24,7 @@ const adminRoutes = require("./src/routes/admin.routes");
 const setupReminderJob = require("./src/jobs/reminders");
 const setupCleanupJob = require("./src/jobs/cleanup");
 const setupAttendanceJob = require("./src/jobs/attendance");
+const setupReconcilePaymentsJob = require("./src/jobs/reconcilePayments");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -65,6 +66,7 @@ const start = async () => {
     setupReminderJob();
     setupCleanupJob();
     setupAttendanceJob();
+    setupReconcilePaymentsJob();
   } catch (err) {
     console.error("Server start failed", err);
     process.exit(1);

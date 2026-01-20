@@ -9,10 +9,19 @@ const aggregateHostBalances = async (hostId) => {
 
   for (const bk of bookings) {
     // amount is stored in minor units (cents/bani); convert to major units for display
-    const amt = Number(bk.amount || 0) / 100;
+    const amount = Number(bk.amount || 0) / 100;
+    const deposit = Number(bk.depositAmount || 0) / 100;
+    const amt = amount > 0 ? amount : deposit;
+    if (amt <= 0) continue;
+
     const eligible = isPayoutEligible(bk);
     if (eligible) {
       available += amt;
+      continue;
+    }
+
+    if (["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"].includes(bk.status)) {
+      pending += amt;
       continue;
     }
 
