@@ -1,6 +1,6 @@
 const { Router } = require("express");
 const jwt = require("jsonwebtoken");
-const { sendMail } = require("../utils/mailer");
+const { sendEmail } = require("../utils/mailer");
 const Experience = require("../models/experience.model");
 const User = require("../models/user.model");
 const { authenticate } = require("../middleware/auth.middleware");
@@ -50,10 +50,17 @@ router.post("/", authenticate, async (req, res) => {
       </p>
     `;
 
-    await sendMail({
-      to: process.env.REPORT_EMAIL_TO || "mgdream1999@gmail.com",
+    const reportsEmail = process.env.REPORTS_EMAIL;
+    if (!reportsEmail) {
+      console.warn("[REPORT] REPORTS_EMAIL missing; skipping email");
+      return res.json({ success: true });
+    }
+
+    await sendEmail({
+      to: reportsEmail,
       subject: `Report: ${experience?.title || experienceId}`,
       html,
+      type: "report",
     });
 
     return res.json({ success: true });
