@@ -49,7 +49,7 @@ const buildWelcomeEmail = ({ ctaUrl }) => {
   });
   return buildBrandedEmail({
     title: "Bine ai venit / Welcome",
-    intro: "Îți mulțumim că ai ales LIVADAI.",
+    intro: "Descoperă experiențe create de oameni ca tine.",
     bodyHtml,
     ctaLabel: "Explorează experiențe",
     ctaUrl,
@@ -169,7 +169,7 @@ const buildBookingCancelledEmail = ({ experience, bookingId, ctaUrl, role }) => 
     roTitle: "Experiență anulată",
     roBody: `
       <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Experiența "${experience?.title || "LIVADAI"}" a fost anulată.</p>
-      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Plata va fi returnată conform politicii de refund.</p>
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Plata va fi returnată cât mai curând, conform politicii de refund.</p>
       <p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Dată:</strong> ${dateLabel}</p>
       ${bookingId ? `<p style="margin:0;font-size:13px;color:#64748b;"><strong>Booking ID:</strong> ${bookingId}</p>` : ""}
     `,

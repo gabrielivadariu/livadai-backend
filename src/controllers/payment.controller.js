@@ -224,7 +224,7 @@ const handlePaymentSuccess = async ({ bookingId, paymentIntentId, sessionId, isD
       });
       await sendEmail({
         to: host.email,
-        subject: "Rezervare nouă / New booking – LIVADAI",
+        subject: "Rezervare confirmată / Booking confirmed – LIVADAI",
         html,
         type: "booking_host",
         userId: host._id,
