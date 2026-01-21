@@ -102,7 +102,7 @@ const buildPasswordResetEmail = ({ resetUrl, code }) => {
   });
 };
 
-const buildBookingConfirmedEmail = ({ experience, bookingId, ctaUrl, role }) => {
+const buildBookingConfirmedEmail = ({ experience, bookingId, ctaUrl, role, seatsBooked, totalSeats, remainingSeats }) => {
   const dateLabel = formatExperienceDate(experience);
   const locationLabel = formatExperienceLocation(experience);
   const title = role === "host" ? "Rezervare confirmată / Booking confirmed" : "Booking confirmat / Booking confirmed";
@@ -110,12 +110,16 @@ const buildBookingConfirmedEmail = ({ experience, bookingId, ctaUrl, role }) => 
     role === "host"
       ? "Ai primit o rezervare nouă."
       : "Rezervarea ta este confirmată.";
+  const showSeats = typeof totalSeats === "number" && totalSeats > 1;
   const bodyHtml = buildBilingualSection({
     roTitle: "Detalii esențiale",
     roBody: `
       <p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Experiență:</strong> ${experience?.title || "LIVADAI"}</p>
       <p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Dată:</strong> ${dateLabel}</p>
       <p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Locație:</strong> ${locationLabel}</p>
+      ${showSeats ? `<p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Locuri rezervate:</strong> ${seatsBooked || 1}</p>` : ""}
+      ${showSeats ? `<p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Total locuri:</strong> ${totalSeats}</p>` : ""}
+      ${showSeats ? `<p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Locuri rămase:</strong> ${remainingSeats ?? 0}</p>` : ""}
       ${bookingId ? `<p style="margin:0;font-size:13px;color:#64748b;"><strong>Booking ID:</strong> ${bookingId}</p>` : ""}
     `,
     enTitle: "Key details",
@@ -123,6 +127,9 @@ const buildBookingConfirmedEmail = ({ experience, bookingId, ctaUrl, role }) => 
       <p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Experience:</strong> ${experience?.title || "LIVADAI"}</p>
       <p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Date:</strong> ${dateLabel}</p>
       <p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Location:</strong> ${locationLabel}</p>
+      ${showSeats ? `<p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Seats booked:</strong> ${seatsBooked || 1}</p>` : ""}
+      ${showSeats ? `<p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Total seats:</strong> ${totalSeats}</p>` : ""}
+      ${showSeats ? `<p style="margin:0 0 6px 0;font-size:15px;color:#334155;"><strong>Seats left:</strong> ${remainingSeats ?? 0}</p>` : ""}
       ${bookingId ? `<p style="margin:0;font-size:13px;color:#64748b;"><strong>Booking ID:</strong> ${bookingId}</p>` : ""}
     `,
   });

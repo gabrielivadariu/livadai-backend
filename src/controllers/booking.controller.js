@@ -90,7 +90,7 @@ const getMyBookings = async (req, res) => {
     const bookings = await Booking.find({ explorer: req.user.id })
       .populate(
         "experience",
-        "title price currencyCode startDate endDate startTime endTime activityType remainingSpots soldOut host address"
+        "title price currencyCode startDate endDate startTime endTime activityType remainingSpots maxParticipants soldOut host address"
       )
       .populate("host", "name");
     return res.json(bookings);
@@ -103,7 +103,7 @@ const getMyBookings = async (req, res) => {
 const getHostBookings = async (req, res) => {
   try {
     const bookings = await Booking.find({ host: req.user.id })
-      .populate("experience", "title price startsAt endsAt startDate endDate")
+      .populate("experience", "title price startsAt endsAt startDate endDate activityType remainingSpots maxParticipants")
       .populate("explorer", "name email");
     return res.json(bookings);
   } catch (err) {

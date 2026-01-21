@@ -203,11 +203,16 @@ const handlePaymentSuccess = async ({ bookingId, paymentIntentId, sessionId, isD
     const hostBookingsLink = `${appUrl.replace(/\/$/, "")}/profile`;
 
     if (explorer?.email) {
+      const totalSeats = exp.maxParticipants || 1;
+      const remainingSeats = typeof exp.remainingSpots === "number" ? exp.remainingSpots : Math.max(0, totalSeats - (booking.quantity || 1));
       const html = buildBookingConfirmedEmail({
         experience: exp,
         bookingId: booking._id,
         ctaUrl: explorerBookingsLink,
         role: "explorer",
+        seatsBooked: booking.quantity || 1,
+        totalSeats,
+        remainingSeats,
       });
       await sendEmail({
         to: explorer.email,
@@ -219,11 +224,16 @@ const handlePaymentSuccess = async ({ bookingId, paymentIntentId, sessionId, isD
     }
 
     if (host?.email) {
+      const totalSeats = exp.maxParticipants || 1;
+      const remainingSeats = typeof exp.remainingSpots === "number" ? exp.remainingSpots : Math.max(0, totalSeats - (booking.quantity || 1));
       const html = buildBookingConfirmedEmail({
         experience: exp,
         bookingId: booking._id,
         ctaUrl: hostBookingsLink,
         role: "host",
+        seatsBooked: booking.quantity || 1,
+        totalSeats,
+        remainingSeats,
       });
       await sendEmail({
         to: host.email,

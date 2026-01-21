@@ -351,7 +351,7 @@ const listExperiences = async (req, res) => {
     // Compute booked spots for these experiences
     const ids = exps.map((e) => e._id);
     const bookedAgg = await Booking.aggregate([
-      { $match: { experience: { $in: ids }, status: { $in: ["PAID", "COMPLETED"] } } },
+      { $match: { experience: { $in: ids }, status: { $in: ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"] } } },
       { $group: { _id: "$experience", booked: { $sum: { $ifNull: ["$quantity", 1] } } } },
     ]);
     const bookedMap = bookedAgg.reduce((acc, b) => {
@@ -401,7 +401,7 @@ const getExperienceById = async (req, res) => {
       {
         $match: {
           experience: new mongoose.Types.ObjectId(exp._id),
-          status: { $in: ["PAID", "COMPLETED"] },
+          status: { $in: ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"] },
         },
       },
       { $group: { _id: "$experience", booked: { $sum: { $ifNull: ["$quantity", 1] } } } },

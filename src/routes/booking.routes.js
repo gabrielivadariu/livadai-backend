@@ -27,7 +27,7 @@ router.post("/report-user", authenticate, reportUser);
 router.get("/:id", authenticate, async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id)
-      .populate("experience", "title startsAt endsAt startDate endDate activityType")
+      .populate("experience", "title startsAt endsAt startDate endDate activityType maxParticipants remainingSpots")
       .populate("explorer", "name displayName profilePhoto avatar phone");
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     const hostId = booking.host?._id?.toString?.() || booking.host?.toString?.() || booking.host;
@@ -42,6 +42,20 @@ router.get("/:id", authenticate, async (req, res) => {
       canViewClientPhone = true;
     }
     const obj = booking.toObject();
+    if (obj.experience?._id) {
+      try {
+        const bookedAgg = await Booking.aggregate([
+          { $match: { experience: booking.experience, status: { $in: ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"] } } },
+          { $group: { _id: "$experience", booked: { $sum: { $ifNull: ["$quantity", 1] } } } },
+        ]);
+        const booked = bookedAgg?.[0]?.booked || 0;
+        const total = obj.experience.maxParticipants || 1;
+        obj.experience.availableSpots = Math.max(0, total - booked);
+        obj.experience.bookedSpots = booked;
+      } catch (err) {
+        console.error("Booking detail booked spots error", err);
+      }
+    }
     if (!canViewClientPhone && obj.explorer) {
       delete obj.explorer.phone;
     }
