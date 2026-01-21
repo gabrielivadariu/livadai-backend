@@ -280,6 +280,7 @@ const disputeBooking = async (req, res) => {
     booking.disputedAt = now;
     booking.disputeReason = reason;
     booking.disputeComment = comment || null;
+    booking.disputeResolvedAt = null;
     await booking.save();
 
     // Create report entry

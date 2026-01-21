@@ -46,6 +46,8 @@ const bookingSchema = new mongoose.Schema(
     attendanceReminderEmailSent: { type: Boolean, default: false },
     completedAt: { type: Date },
     payoutEligibleAt: { type: Date },
+    chatArchivedAt: { type: Date },
+    disputeResolvedAt: { type: Date },
     disputedAt: { type: Date },
     disputeReason: {
       type: String,
@@ -56,5 +58,7 @@ const bookingSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+bookingSchema.index({ chatArchivedAt: 1 });
 
 module.exports = mongoose.model("Booking", bookingSchema);

@@ -57,6 +57,9 @@ const applyResolve = async (bookingId) => {
   booking.disputedAt = null;
   booking.disputeReason = null;
   booking.disputeComment = null;
+  if (!booking.disputeResolvedAt) {
+    booking.disputeResolvedAt = new Date();
+  }
   const base = booking.completedAt || new Date();
   booking.completedAt = base;
   booking.payoutEligibleAt = new Date(base.getTime() + 72 * 60 * 60 * 1000);
@@ -70,6 +73,9 @@ const applyIgnore = async (bookingId) => {
   booking.disputedAt = null;
   booking.disputeReason = null;
   booking.disputeComment = null;
+  if (!booking.disputeResolvedAt) {
+    booking.disputeResolvedAt = new Date();
+  }
   if (booking.status === "DISPUTED") booking.status = "COMPLETED";
   if (booking.completedAt) {
     booking.payoutEligibleAt = new Date(booking.completedAt.getTime() + 72 * 60 * 60 * 1000);
@@ -83,6 +89,9 @@ const applyRefundExplorer = async (bookingId) => {
   if (!booking) return "Booking not found";
   booking.status = "CANCELLED";
   booking.payoutEligibleAt = null;
+  if (!booking.disputeResolvedAt) {
+    booking.disputeResolvedAt = new Date();
+  }
   await booking.save();
   return "Booking marked for refund/cancelled";
 };

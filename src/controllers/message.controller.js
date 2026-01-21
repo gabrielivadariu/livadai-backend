@@ -20,8 +20,26 @@ const isParticipant = (booking, userId) => {
   return explorerId === userId || hostId === userId;
 };
 
-const ensureChatAllowed = (booking) => {
-  return ["PAID", "COMPLETED", "DEPOSIT_PAID"].includes(booking.status);
+const CHAT_STATUSES = new Set([
+  "PAID",
+  "DEPOSIT_PAID",
+  "PENDING_ATTENDANCE",
+  "COMPLETED",
+  "AUTO_COMPLETED",
+  "NO_SHOW",
+  "DISPUTED",
+]);
+
+const isChatArchived = (booking) => {
+  if (!booking?.chatArchivedAt) return false;
+  const archivedAt = new Date(booking.chatArchivedAt);
+  return !Number.isNaN(archivedAt.getTime()) && archivedAt <= new Date();
+};
+
+const ensureChatAllowed = (booking, isAdmin = false) => {
+  if (!booking) return false;
+  if (!isAdmin && isChatArchived(booking)) return false;
+  return CHAT_STATUSES.has(booking.status);
 };
 
 const maskContactInfo = (text) => {
@@ -38,14 +56,15 @@ const listMessages = async (req, res) => {
     const booking = await Booking.findById(bookingId);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
-    if (!isParticipant(booking, req.user.id)) {
+    const isAdmin = req.user?.role === "ADMIN";
+    if (!isAdmin && !isParticipant(booking, req.user.id)) {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    if (!ensureChatAllowed(booking)) {
+    if (!ensureChatAllowed(booking, isAdmin)) {
       return res
         .status(403)
-        .json({ message: "Chat is available only after payment." });
+        .json({ message: isChatArchived(booking) ? "Chat archived." : "Chat is available only after payment." });
     }
 
     const messages = await Message.find({ booking: bookingId })
@@ -83,14 +102,15 @@ const sendMessage = async (req, res) => {
     const booking = await Booking.findById(bookingId);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
+    const isAdmin = req.user?.role === "ADMIN";
     if (!isParticipant(booking, req.user.id)) {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    if (!ensureChatAllowed(booking)) {
+    if (!ensureChatAllowed(booking, isAdmin)) {
       return res
         .status(403)
-        .json({ message: "Chat is available only after payment." });
+        .json({ message: isChatArchived(booking) ? "Chat archived." : "Chat is available only after payment." });
     }
 
     if (!message || !message.trim()) {
@@ -151,9 +171,13 @@ const sendMessage = async (req, res) => {
 const listConversations = async (req, res) => {
   try {
     // bookings where user is explorer or host and paid/completed
+    const now = new Date();
     const bookings = await Booking.find({
-      status: { $in: ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"] },
-      $or: [{ explorer: req.user.id }, { host: req.user.id }],
+      status: { $in: Array.from(CHAT_STATUSES) },
+      $and: [
+        { $or: [{ explorer: req.user.id }, { host: req.user.id }] },
+        { $or: [{ chatArchivedAt: { $exists: false } }, { chatArchivedAt: null }, { chatArchivedAt: { $gt: now } }] },
+      ],
     }).populate("experience", "title");
 
     const results = [];
