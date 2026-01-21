@@ -15,13 +15,13 @@ const Booking = require("../models/booking.model");
 
 const router = Router();
 
-router.post("/", authenticate, authorize(["EXPLORER"]), createBooking);
-router.get("/me", authenticate, authorize(["EXPLORER"]), getMyBookings);
+router.post("/", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), createBooking);
+router.get("/me", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), getMyBookings);
 router.get("/host", authenticate, authorize(["HOST"]), getHostBookings);
 router.post("/:id/attendance", authenticate, authorize(["HOST"]), updateAttendance); // legacy
 router.post("/:id/confirm-attendance", authenticate, authorize(["HOST"]), confirmAttendance);
 router.post("/:id/no-show", authenticate, authorize(["HOST"]), markNoShow);
-router.post("/:id/dispute", authenticate, authorize(["EXPLORER"]), disputeBooking);
+router.post("/:id/dispute", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), disputeBooking);
 router.post("/report-content", authenticate, reportContent);
 router.post("/report-user", authenticate, reportUser);
 router.get("/:id", authenticate, async (req, res) => {

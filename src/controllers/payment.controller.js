@@ -17,6 +17,9 @@ const createCheckout = async (req, res) => {
 
     const exp = await Experience.findById(experienceId);
     if (!exp || exp.isActive === false || exp.status === "DISABLED") return res.status(404).json({ message: "Experience not available" });
+    if (exp.host?.toString?.() === req.user.id) {
+      return res.status(403).json({ message: "Cannot book your own experience" });
+    }
     // explorer banned?
     const explorer = await User.findById(req.user.id);
     if (explorer?.isBanned) return res.status(403).json({ message: "Explorer banned" });

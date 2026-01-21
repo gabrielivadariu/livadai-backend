@@ -25,7 +25,7 @@ router.post("/create-onboarding-link", authenticate, authorize(["HOST"]), create
 // Host dashboard login link
 router.get("/host-dashboard", authenticate, authorize(["HOST"]), hostDashboardLink);
 // Client checkout -> payment intent
-router.post("/checkout", authenticate, authorize(["EXPLORER"]), createCheckout);
+router.post("/checkout", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), createCheckout);
 // Host wallet balance
 router.get("/wallet/balance", authenticate, authorize(["HOST"]), walletBalance);
 // Host wallet transactions
