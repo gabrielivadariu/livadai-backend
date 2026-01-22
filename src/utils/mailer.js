@@ -24,17 +24,40 @@ const getTransporter = () => {
   return cachedTransporter;
 };
 
-const resolveFrom = ({ type, from }) => {
+const resolveFrom = ({ type, from, subject }) => {
   if (from) return from;
-  if (type === "report") return process.env.REPORTS_EMAIL || process.env.EMAIL_FROM || process.env.SMTP_USER;
-  if (type === "official") return process.env.EMAIL_FROM || process.env.SMTP_USER;
+  const fallback = process.env.EMAIL_FROM || process.env.SMTP_USER;
+  const normalizedSubject = (subject || "").toLowerCase();
+  const isDispute = normalizedSubject.includes("dispute") || normalizedSubject.includes("dispută");
+  const isAttendance = normalizedSubject.includes("confirmă prezența") || normalizedSubject.includes("confirm attendance");
+  const isContentReport =
+    normalizedSubject.includes("content report") ||
+    normalizedSubject.startsWith("report:");
+
   if (type === "welcome_explorer" || type === "welcome_host") {
-    return process.env.HELLO_EMAIL || process.env.EMAIL_FROM || process.env.SMTP_USER;
+    return process.env.HELLO_EMAIL || fallback;
   }
-  if (type === "booking_explorer" || type === "booking_host" || type === "booking_cancelled" || type === "booking_reminder") {
-    return process.env.EMAIL_FROM || process.env.SMTP_USER;
+  if (type === "booking_explorer" || type === "booking_host") {
+    return process.env.BOOKINGS_EMAIL || fallback;
   }
-  return process.env.EMAIL_FROM || process.env.SMTP_USER;
+  if (type === "booking_reminder") {
+    return process.env.NOTIFICATIONS_EMAIL || fallback;
+  }
+  if (type === "booking_cancelled") {
+    return process.env.INFO_EMAIL || fallback;
+  }
+  if (type === "report") {
+    if (isContentReport) {
+      return process.env.SUPPORT_EMAIL || fallback;
+    }
+    return process.env.REPORTS_EMAIL || fallback;
+  }
+  if (type === "official") {
+    if (isDispute) return process.env.SUPPORT_EMAIL || fallback;
+    if (isAttendance) return process.env.NOTIFICATIONS_EMAIL || fallback;
+    return process.env.INFO_EMAIL || fallback;
+  }
+  return fallback;
 };
 
 const resolveReplyTo = ({ type, replyTo }) => {
@@ -132,7 +155,7 @@ const sendWithResend = async ({ from, to, subject, html, replyTo }) => {
 };
 
 const sendEmail = async ({ to, subject, html, type, from, replyTo, userId }) => {
-  const resolvedFrom = resolveFrom({ type, from });
+  const resolvedFrom = resolveFrom({ type, from, subject });
   const resolvedReplyTo = resolveReplyTo({ type, replyTo });
   const finalHtml = ensureFooter(html);
 
