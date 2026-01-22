@@ -30,9 +30,6 @@ const resolveFrom = ({ type, from, subject }) => {
   const normalizedSubject = (subject || "").toLowerCase();
   const isDispute = normalizedSubject.includes("dispute") || normalizedSubject.includes("dispută");
   const isAttendance = normalizedSubject.includes("confirmă prezența") || normalizedSubject.includes("confirm attendance");
-  const isContentReport =
-    normalizedSubject.includes("content report") ||
-    normalizedSubject.startsWith("report:");
 
   if (type === "welcome_explorer" || type === "welcome_host") {
     return process.env.HELLO_EMAIL || fallback;
@@ -47,9 +44,6 @@ const resolveFrom = ({ type, from, subject }) => {
     return process.env.INFO_EMAIL || fallback;
   }
   if (type === "report") {
-    if (isContentReport) {
-      return process.env.SUPPORT_EMAIL || fallback;
-    }
     return process.env.REPORTS_EMAIL || fallback;
   }
   if (type === "official") {
