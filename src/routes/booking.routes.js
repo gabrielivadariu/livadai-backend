@@ -3,6 +3,8 @@ const {
   createBooking,
   getMyBookings,
   getHostBookings,
+  getHostBookingsByExperience,
+  cancelBookingByHost,
   updateAttendance,
   confirmAttendance,
   markNoShow,
@@ -18,9 +20,11 @@ const router = Router();
 router.post("/", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), createBooking);
 router.get("/me", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), getMyBookings);
 router.get("/host", authenticate, authorize(["HOST"]), getHostBookings);
+router.get("/host/experience/:experienceId", authenticate, authorize(["HOST", "BOTH"]), getHostBookingsByExperience);
 router.post("/:id/attendance", authenticate, authorize(["HOST"]), updateAttendance); // legacy
 router.post("/:id/confirm-attendance", authenticate, authorize(["HOST"]), confirmAttendance);
 router.post("/:id/no-show", authenticate, authorize(["HOST"]), markNoShow);
+router.post("/:id/cancel-by-host", authenticate, authorize(["HOST", "BOTH"]), cancelBookingByHost);
 router.post("/:id/dispute", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), disputeBooking);
 router.post("/report-content", authenticate, reportContent);
 router.post("/report-user", authenticate, reportUser);

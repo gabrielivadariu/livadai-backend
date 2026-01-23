@@ -7,7 +7,7 @@ const Payment = require("../models/payment.model");
 const stripe = require("../config/stripe");
 const jwt = require("jsonwebtoken");
 const { sendEmail } = require("../utils/mailer");
-const { buildDisputeOpenedEmail } = require("../utils/emailTemplates");
+const { buildDisputeOpenedEmail, buildBookingCancelledEmail } = require("../utils/emailTemplates");
 const { isPayoutEligible, logPayoutAttempt } = require("../utils/payout");
 const { sendContentReportEmail, sendDisputeEmail, sendUserReportEmail } = require("../utils/reports");
 const { recalcTrustedParticipant } = require("../utils/trust");
@@ -108,6 +108,108 @@ const getHostBookings = async (req, res) => {
     return res.json(bookings);
   } catch (err) {
     console.error("Get host bookings error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const getHostBookingsByExperience = async (req, res) => {
+  try {
+    const experienceId = req.params.experienceId;
+    const bookings = await Booking.find({ host: req.user.id, experience: experienceId })
+      .populate("experience", "title price startsAt endsAt startDate endDate activityType remainingSpots maxParticipants")
+      .populate("explorer", "name email displayName profilePhoto avatar phone");
+    return res.json(bookings);
+  } catch (err) {
+    console.error("Get host bookings by experience error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const cancelBookingByHost = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const booking = await Booking.findById(id).populate(
+      "experience",
+      "title host maxParticipants remainingSpots activityType status isActive"
+    );
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    if (booking.host.toString() !== req.user.id) return res.status(403).json({ message: "Forbidden" });
+    if (["CANCELLED", "REFUNDED"].includes(booking.status)) {
+      return res.status(400).json({ message: "Booking already cancelled" });
+    }
+    if (["COMPLETED", "AUTO_COMPLETED", "NO_SHOW"].includes(booking.status)) {
+      return res.status(400).json({ message: "Booking already finalized" });
+    }
+
+    // Refund if payment exists
+    if (["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"].includes(booking.status)) {
+      const payment = await Payment.findOne({ booking: booking._id, status: { $in: ["CONFIRMED", "INITIATED"] } });
+      if (payment?.stripePaymentIntentId) {
+        try {
+          await stripe.refunds.create({ payment_intent: payment.stripePaymentIntentId });
+          payment.status = "REFUNDED";
+          await payment.save();
+        } catch (err) {
+          console.error("Refund failed", err?.message || err);
+        }
+      }
+    }
+
+    booking.status = "CANCELLED";
+    booking.payoutEligibleAt = null;
+    await booking.save();
+
+    const exp = booking.experience;
+    if (exp) {
+      const qty = booking.quantity || 1;
+      const total = exp.maxParticipants || qty;
+      const currentRemaining = Number.isFinite(exp.remainingSpots) ? exp.remainingSpots : Math.max(0, total - qty);
+      exp.remainingSpots = Math.min(total, currentRemaining + qty);
+      if (exp.remainingSpots > 0) {
+        exp.soldOut = false;
+      }
+      await exp.save();
+    }
+
+    try {
+      await createNotification({
+        user: booking.explorer,
+        type: "BOOKING_CANCELLED",
+        title: "Booking cancelled",
+        message: `Your booking for "${exp?.title || "experience"}" was cancelled by the host.`,
+        data: { activityId: exp?._id || booking.experience, bookingId: booking._id, activityTitle: exp?.title },
+        push: true,
+      });
+    } catch (err) {
+      console.error("Notify cancel booking error", err);
+    }
+
+    try {
+      const explorer = await User.findById(booking.explorer).select("email name displayName");
+      if (explorer?.email && exp) {
+        const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+        const exploreUrl = `${appUrl.replace(/\/$/, "")}/my-activities`;
+        const html = buildBookingCancelledEmail({
+          experience: exp,
+          bookingId: booking._id,
+          ctaUrl: exploreUrl,
+          role: "explorer",
+        });
+        await sendEmail({
+          to: explorer.email,
+          subject: "Rezervare anulată / Booking cancelled – LIVADAI",
+          html,
+          type: "booking_cancelled",
+          userId: explorer._id,
+        });
+      }
+    } catch (err) {
+      console.error("Cancel booking email error", err);
+    }
+
+    return res.json({ success: true, status: booking.status });
+  } catch (err) {
+    console.error("Cancel booking by host error", err);
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -438,6 +540,8 @@ module.exports = {
   createBooking,
   getMyBookings,
   getHostBookings,
+  getHostBookingsByExperience,
+  cancelBookingByHost,
   updateAttendance,
   confirmAttendance,
   markNoShow,
