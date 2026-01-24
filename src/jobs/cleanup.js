@@ -74,11 +74,11 @@ const getExperienceEndDate = (exp) => {
   return null;
 };
 
-// Runs periodically to hide/delete stale experiences.
-// Rules:
-// - If experience has ended AND has no bookings -> hard delete.
-// - If experience has ended AND has bookings -> mark inactive/cancelled.
-// - If experience is sold out / no remaining spots -> mark inactive (keep record for bookings).
+      // Runs periodically to hide/delete stale experiences.
+      // Rules:
+      // - If experience has ended AND has no bookings -> archive (read-only history).
+      // - If experience has ended AND has bookings -> mark inactive/cancelled.
+      // - If experience is sold out / no remaining spots -> mark inactive (keep record for bookings).
 const setupCleanupJob = () => {
   const run = async () => {
     const now = new Date();
@@ -149,8 +149,27 @@ const setupCleanupJob = () => {
       for (const exp of ended) {
         const bookingsCount = await Booking.countDocuments({ experience: exp._id });
         if (bookingsCount === 0) {
-          await Experience.deleteOne({ _id: exp._id });
-          console.log("Cleanup: deleted expired experience with no bookings", { id: exp._id.toString() });
+          exp.isActive = false;
+          exp.status = "NO_BOOKINGS";
+          if (!exp.mediaCleanedAt) {
+            const eligibleAt = getExperienceEndDate(exp);
+            if (eligibleAt && eligibleAt <= mediaCutoff) {
+              const urls = [
+                ...(exp.images || []),
+                ...(exp.videos || []),
+                exp.mainImageUrl,
+                exp.coverImageUrl,
+              ];
+              await deleteCloudinaryMedia(urls);
+              exp.images = [];
+              exp.videos = [];
+              exp.mainImageUrl = null;
+              exp.coverImageUrl = null;
+              exp.mediaCleanedAt = new Date();
+            }
+          }
+          await exp.save();
+          console.log("Cleanup: archived expired experience with no bookings", { id: exp._id.toString() });
         } else {
           exp.isActive = false;
           exp.status = "cancelled";
