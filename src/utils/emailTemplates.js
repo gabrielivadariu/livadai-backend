@@ -102,6 +102,88 @@ const buildPasswordResetEmail = ({ resetUrl, code }) => {
   });
 };
 
+const buildPasswordChangedEmail = () => {
+  const bodyHtml = buildBilingualSection({
+    roTitle: "Parola ta a fost schimbată",
+    roBody: `
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Parola contului tău LIVADAI a fost actualizată.</p>
+      <p style="margin:0;font-size:15px;color:#334155;">Dacă nu ai făcut această schimbare, contactează suportul imediat.</p>
+    `,
+    enTitle: "Your password was changed",
+    enBody: `
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Your LIVADAI password has been updated.</p>
+      <p style="margin:0;font-size:15px;color:#334155;">If you did not do this, please contact support immediately.</p>
+    `,
+  });
+  return buildBrandedEmail({
+    title: "Parolă schimbată / Password changed",
+    intro: "Notificare de securitate.",
+    bodyHtml,
+  });
+};
+
+const buildEmailChangedEmail = ({ newEmail }) => {
+  const bodyHtml = buildBilingualSection({
+    roTitle: "Email actualizat",
+    roBody: `
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Emailul contului tău LIVADAI a fost schimbat.</p>
+      ${newEmail ? `<p style="margin:0;font-size:15px;color:#334155;"><strong>Noul email:</strong> ${newEmail}</p>` : ""}
+    `,
+    enTitle: "Email updated",
+    enBody: `
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Your LIVADAI account email has been changed.</p>
+      ${newEmail ? `<p style="margin:0;font-size:15px;color:#334155;"><strong>New email:</strong> ${newEmail}</p>` : ""}
+    `,
+  });
+  return buildBrandedEmail({
+    title: "Email schimbat / Email changed",
+    intro: "Notificare de securitate.",
+    bodyHtml,
+  });
+};
+
+const buildAccountDeletedEmail = () => {
+  const bodyHtml = buildBilingualSection({
+    roTitle: "Cont șters",
+    roBody: `
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Contul tău LIVADAI a fost șters.</p>
+      <p style="margin:0;font-size:15px;color:#334155;">Ne pare rău să te vedem plecând.</p>
+    `,
+    enTitle: "Account deleted",
+    enBody: `
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Your LIVADAI account has been deleted.</p>
+      <p style="margin:0;font-size:15px;color:#334155;">We're sorry to see you go.</p>
+    `,
+  });
+  return buildBrandedEmail({
+    title: "Cont șters / Account deleted",
+    intro: "Confirmare.",
+    bodyHtml,
+  });
+};
+
+const buildDeleteAccountOtpEmail = ({ code, expiresMinutes }) => {
+  const bodyHtml = buildBilingualSection({
+    roTitle: "Confirmă ștergerea contului",
+    roBody: `
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Folosește codul de mai jos pentru a confirma ștergerea contului:</p>
+      <div style="display:inline-block;padding:10px 16px;border-radius:10px;background:#fee2e2;color:#991b1b;font-weight:800;letter-spacing:2px;font-size:18px;">${code}</div>
+      <p style="margin:10px 0 0 0;font-size:13px;color:#64748b;">Expiră în ${expiresMinutes} minute.</p>
+    `,
+    enTitle: "Confirm account deletion",
+    enBody: `
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Use the code below to confirm account deletion:</p>
+      <div style="display:inline-block;padding:10px 16px;border-radius:10px;background:#fee2e2;color:#991b1b;font-weight:800;letter-spacing:2px;font-size:18px;">${code}</div>
+      <p style="margin:10px 0 0 0;font-size:13px;color:#64748b;">Expires in ${expiresMinutes} minutes.</p>
+    `,
+  });
+  return buildBrandedEmail({
+    title: "Ștergere cont / Account deletion",
+    intro: "Confirmare necesară.",
+    bodyHtml,
+  });
+};
+
 const buildBookingConfirmedEmail = ({ experience, bookingId, ctaUrl, role, seatsBooked, totalSeats, remainingSeats }) => {
   const dateLabel = formatExperienceDate(experience);
   const locationLabel = formatExperienceLocation(experience);
@@ -251,6 +333,10 @@ module.exports = {
   buildWelcomeEmail,
   buildEmailVerificationEmail,
   buildPasswordResetEmail,
+  buildPasswordChangedEmail,
+  buildEmailChangedEmail,
+  buildAccountDeletedEmail,
+  buildDeleteAccountOtpEmail,
   buildBookingConfirmedEmail,
   buildBookingReminderEmail,
   buildBookingCancelledEmail,

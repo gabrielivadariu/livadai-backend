@@ -2,6 +2,15 @@ const mongoose = require("mongoose");
 const User = require("../models/user.model");
 const Booking = require("../models/booking.model");
 const Experience = require("../models/experience.model");
+const bcrypt = require("bcryptjs");
+const { sendEmail } = require("../utils/mailer");
+const {
+  buildPasswordChangedEmail,
+  buildEmailChangedEmail,
+  buildAccountDeletedEmail,
+  buildDeleteAccountOtpEmail,
+} = require("../utils/emailTemplates");
+const { validatePasswordStrength } = require("../utils/passwordPolicy");
 
 const buildHistory = async (userId) => {
   const history = await Booking.find({ explorer: userId, status: "COMPLETED" })
@@ -136,33 +145,34 @@ const buildHistory = async (userId) => {
   }
 };
 
-const deleteMe = async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id).select("role isHost");
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    const isHost = user.isHost || user.role === "HOST" || user.role === "BOTH";
-    if (isHost) {
-      const now = new Date();
-      const activeExpCount = await Experience.countDocuments({
-        host: user._id,
-        status: "published",
-        endsAt: { $gte: now },
-      });
-      const activeBookingStatuses = ["PENDING", "DEPOSIT_PAID", "PAID", "PENDING_ATTENDANCE", "DISPUTED"];
-      const activeBookingCount = await Booking.countDocuments({
-        host: user._id,
-        status: { $in: activeBookingStatuses },
-      });
-      if (activeExpCount > 0 || activeBookingCount > 0) {
-        return res.status(400).json({
-          message: "Nu poți șterge contul cât timp ai experiențe active sau rezervări în desfășurare. / You cannot delete your account while you have active experiences or ongoing bookings.",
-        });
-      }
+const canDeleteAccount = async (user) => {
+  const isHost = user.isHost || user.role === "HOST" || user.role === "BOTH";
+  if (isHost) {
+    const now = new Date();
+    const activeExpCount = await Experience.countDocuments({
+      host: user._id,
+      status: "published",
+      endsAt: { $gte: now },
+    });
+    const activeBookingStatuses = ["PENDING", "DEPOSIT_PAID", "PAID", "PENDING_ATTENDANCE", "DISPUTED"];
+    const activeBookingCount = await Booking.countDocuments({
+      host: user._id,
+      status: { $in: activeBookingStatuses },
+    });
+    if (activeExpCount > 0 || activeBookingCount > 0) {
+      return {
+        ok: false,
+        message:
+          "Nu poți șterge contul cât timp ai experiențe active sau rezervări în desfășurare. / You cannot delete your account while you have active experiences or ongoing bookings.",
+      };
     }
+  }
+  return { ok: true };
+};
 
-    await User.deleteOne({ _id: user._id });
-    return res.status(204).send();
+const deleteMe = async (_req, res) => {
+  try {
+    return res.status(400).json({ message: "Account deletion requires email confirmation." });
   } catch (err) {
     console.error("deleteMe error", err);
     return res.status(500).json({ message: "Server error" });
@@ -211,4 +221,169 @@ const toggleFavorite = async (req, res) => {
   }
 };
 
-module.exports = { getMeProfile, updateMeProfile, getPublicProfile, deleteMe, getMyFavorites, toggleFavorite };
+const requestDeleteOtp = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("email role isHost deleteOtpCode deleteOtpExpires deleteOtpAttempts");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    const allowed = await canDeleteAccount(user);
+    if (!allowed.ok) return res.status(400).json({ message: allowed.message });
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.deleteOtpCode = otp;
+    user.deleteOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
+    user.deleteOtpAttempts = 0;
+    await user.save();
+
+    try {
+      const html = buildDeleteAccountOtpEmail({ code: otp, expiresMinutes: 10 });
+      await sendEmail({
+        to: user.email,
+        subject: "Ștergere cont / Account deletion – LIVADAI",
+        html,
+        type: "official",
+        userId: user._id,
+      });
+    } catch (err) {
+      console.error("Delete OTP email error", err);
+    }
+
+    return res.json({ message: "Delete code sent" });
+  } catch (err) {
+    console.error("requestDeleteOtp error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const confirmDeleteOtp = async (req, res) => {
+  try {
+    const { otpCode } = req.body || {};
+    if (!otpCode) return res.status(400).json({ message: "otpCode required" });
+    const user = await User.findById(req.user.id).select("email role isHost deleteOtpCode deleteOtpExpires deleteOtpAttempts");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    const allowed = await canDeleteAccount(user);
+    if (!allowed.ok) return res.status(400).json({ message: allowed.message });
+
+    if (!user.deleteOtpCode || !user.deleteOtpExpires) {
+      return res.status(400).json({ message: "Invalid or expired code" });
+    }
+    if (user.deleteOtpAttempts >= 3) {
+      return res.status(400).json({ message: "Too many attempts" });
+    }
+    if (new Date(user.deleteOtpExpires) < new Date()) {
+      return res.status(400).json({ message: "Invalid or expired code" });
+    }
+    if (user.deleteOtpCode !== otpCode) {
+      user.deleteOtpAttempts = (user.deleteOtpAttempts || 0) + 1;
+      await user.save();
+      return res.status(400).json({ message: "Invalid or expired code" });
+    }
+
+    try {
+      const html = buildAccountDeletedEmail({});
+      await sendEmail({
+        to: user.email,
+        subject: "Cont șters / Account deleted – LIVADAI",
+        html,
+        type: "official",
+        userId: user._id,
+      });
+    } catch (err) {
+      console.error("Account deleted email error", err);
+    }
+
+    await User.deleteOne({ _id: user._id });
+    return res.status(204).send();
+  } catch (err) {
+    console.error("confirmDeleteOtp error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword, confirmPassword } = req.body || {};
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({ message: "currentPassword, newPassword, confirmPassword required" });
+    }
+    if (newPassword !== confirmPassword) return res.status(400).json({ message: "Passwords do not match" });
+    const strengthError = validatePasswordStrength(newPassword);
+    if (strengthError) return res.status(400).json({ message: strengthError });
+    const user = await User.findById(req.user.id).select("password email tokenVersion");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    const match = await bcrypt.compare(currentPassword, user.password);
+    if (!match) return res.status(401).json({ message: "Invalid credentials" });
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    user.lastAuthAt = new Date();
+    await user.save();
+    try {
+      const html = buildPasswordChangedEmail({});
+      await sendEmail({
+        to: user.email,
+        subject: "Parolă schimbată / Password changed – LIVADAI",
+        html,
+        type: "official",
+        userId: user._id,
+      });
+    } catch (err) {
+      console.error("Password changed email error", err);
+    }
+    return res.json({ message: "Password updated" });
+  } catch (err) {
+    console.error("changePassword error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const changeEmail = async (req, res) => {
+  try {
+    const { newEmail } = req.body || {};
+    if (!newEmail) return res.status(400).json({ message: "newEmail required" });
+    const user = await User.findById(req.user.id).select("email");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (user.email === newEmail) return res.status(400).json({ message: "Email unchanged" });
+    const existing = await User.findOne({ email: newEmail });
+    if (existing) return res.status(409).json({ message: "Email already registered" });
+
+    const oldEmail = user.email;
+    user.email = newEmail;
+    user.lastAuthAt = new Date();
+    await user.save();
+    try {
+      const html = buildEmailChangedEmail({ newEmail });
+      await sendEmail({
+        to: oldEmail,
+        subject: "Email schimbat / Email changed – LIVADAI",
+        html,
+        type: "official",
+        userId: user._id,
+      });
+      await sendEmail({
+        to: newEmail,
+        subject: "Email schimbat / Email changed – LIVADAI",
+        html,
+        type: "official",
+        userId: user._id,
+      });
+    } catch (err) {
+      console.error("Email changed email error", err);
+    }
+    return res.json({ message: "Email updated" });
+  } catch (err) {
+    console.error("changeEmail error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+module.exports = {
+  getMeProfile,
+  updateMeProfile,
+  getPublicProfile,
+  deleteMe,
+  requestDeleteOtp,
+  confirmDeleteOtp,
+  changePassword,
+  changeEmail,
+  getMyFavorites,
+  toggleFavorite,
+};

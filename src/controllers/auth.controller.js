@@ -3,14 +3,53 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/user.model");
 const crypto = require("crypto");
 const { sendEmail } = require("../utils/mailer");
-const { buildEmailVerificationEmail, buildWelcomeEmail, buildPasswordResetEmail } = require("../utils/emailTemplates");
+const {
+  buildEmailVerificationEmail,
+  buildWelcomeEmail,
+  buildPasswordResetEmail,
+  buildPasswordChangedEmail,
+} = require("../utils/emailTemplates");
+const { validatePasswordStrength } = require("../utils/passwordPolicy");
 
-const passwordPolicyRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
-const passwordPolicyMessage = "Password must be at least 8 characters and include uppercase, lowercase, number, and special character.";
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 5;
+const loginAttempts = new Map();
 
-const validatePasswordStrength = (password) => {
-  if (!passwordPolicyRegex.test(password || "")) return passwordPolicyMessage;
-  return null;
+const getClientIp = (req) => {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",")[0].trim();
+  }
+  return req.ip || req.connection?.remoteAddress || "unknown";
+};
+
+const getLoginKey = (req, email) => `${getClientIp(req)}|${String(email || "").toLowerCase()}`;
+
+const isLoginBlocked = (key) => {
+  const entry = loginAttempts.get(key);
+  return !!(entry && entry.blockedUntil && entry.blockedUntil > Date.now());
+};
+
+const recordLoginFailure = (key) => {
+  const now = Date.now();
+  const entry = loginAttempts.get(key);
+  if (!entry || now - entry.firstAttempt > LOGIN_WINDOW_MS) {
+    const next = { count: 1, firstAttempt: now, blockedUntil: null };
+    loginAttempts.set(key, next);
+    return false;
+  }
+  const nextCount = entry.count + 1;
+  const blocked = nextCount >= LOGIN_MAX_ATTEMPTS;
+  loginAttempts.set(key, {
+    count: nextCount,
+    firstAttempt: entry.firstAttempt,
+    blockedUntil: blocked ? now + LOGIN_WINDOW_MS : null,
+  });
+  return blocked;
+};
+
+const clearLoginAttempts = (key) => {
+  loginAttempts.delete(key);
 };
 
 const signToken = (user) => {
@@ -18,6 +57,7 @@ const signToken = (user) => {
     {
       userId: user._id,
       role: user.role,
+      tokenVersion: user.tokenVersion || 0,
     },
     process.env.JWT_SECRET,
     { expiresIn: "7d" }
@@ -133,21 +173,34 @@ const login = async (req, res) => {
     if (!email || !password) {
       return res.status(400).json({ message: "email and password required" });
     }
+    const loginKey = getLoginKey(req, email);
+    if (isLoginBlocked(loginKey)) {
+      return res.status(429).json({ message: "Too many attempts. Please try again later." });
+    }
 
     const user = await User.findOne({ email });
     if (!user) {
-      return res.status(401).json({ message: "Invalid credentials" });
+      const blocked = recordLoginFailure(loginKey);
+      return res.status(blocked ? 429 : 401).json({
+        message: blocked ? "Too many attempts. Please try again later." : "Invalid credentials",
+      });
     }
 
     const match = await bcrypt.compare(password, user.password);
     if (!match) {
-      return res.status(401).json({ message: "Invalid credentials" });
+      const blocked = recordLoginFailure(loginKey);
+      return res.status(blocked ? 429 : 401).json({
+        message: blocked ? "Too many attempts. Please try again later." : "Invalid credentials",
+      });
     }
 
     if (!user.emailVerified) {
       return res.status(403).json({ message: "Please verify your email before logging in" });
     }
 
+    user.lastAuthAt = new Date();
+    await user.save();
+    clearLoginAttempts(loginKey);
     const token = signToken(user);
     return res.json({
       message: "Login successful",
@@ -174,6 +227,9 @@ const forgotPassword = async (req, res) => {
     const expires = new Date(Date.now() + 30 * 60 * 1000); // 30 min
     user.resetPasswordToken = token;
     user.resetPasswordExpires = expires;
+    user.resetOtpCode = undefined;
+    user.resetOtpExpires = undefined;
+    user.resetOtpAttempts = 0;
     await user.save();
 
     // send email
@@ -220,7 +276,20 @@ const resetPassword = async (req, res) => {
     user.password = hashed;
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
     await user.save();
+    try {
+      const html = buildPasswordChangedEmail({});
+      await sendEmail({
+        to: user.email,
+        subject: "Parolă schimbată / Password changed – LIVADAI",
+        html,
+        type: "official",
+        userId: user._id,
+      });
+    } catch (err) {
+      console.error("Password changed email error", err);
+    }
 
     return res.json({ message: "Password reset successful" });
   } catch (err) {
@@ -301,7 +370,20 @@ const resetPasswordOtp = async (req, res) => {
     user.resetOtpCode = undefined;
     user.resetOtpExpires = undefined;
     user.resetOtpAttempts = 0;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
     await user.save();
+    try {
+      const html = buildPasswordChangedEmail({});
+      await sendEmail({
+        to: user.email,
+        subject: "Parolă schimbată / Password changed – LIVADAI",
+        html,
+        type: "official",
+        userId: user._id,
+      });
+    } catch (err) {
+      console.error("Password changed email error", err);
+    }
 
     return res.json({ message: "Password reset successful" });
   } catch (err) {
@@ -355,6 +437,23 @@ const getMe = async (req, res) => {
     return res.json({ user: buildAuthUser(user) });
   } catch (err) {
     console.error("Get me error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const reauth = async (req, res) => {
+  try {
+    const { password } = req.body || {};
+    if (!password) return res.status(400).json({ message: "password required" });
+    const user = await User.findById(req.user?.id).select("password");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(401).json({ message: "Invalid credentials" });
+    user.lastAuthAt = new Date();
+    await user.save();
+    return res.json({ message: "Re-authenticated" });
+  } catch (err) {
+    console.error("Reauth error", err);
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -429,6 +528,7 @@ module.exports = {
   resetPasswordOtp,
   verifyEmail,
   resendEmailVerification,
+  reauth,
   becomeHost,
   getMe,
 };
