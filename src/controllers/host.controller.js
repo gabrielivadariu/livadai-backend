@@ -127,8 +127,25 @@ const getHostActivities = async (req, res) => {
     const limit = Number(req.query.limit) || 10;
     const activities = await Experience.find({ host: id })
       .sort({ startDate: -1, createdAt: -1 })
-      .limit(limit);
-    return res.json(activities);
+      .limit(limit)
+      .lean();
+    const ids = activities.map((a) => a._id);
+    if (!ids.length) return res.json([]);
+    const bookedAgg = await Booking.aggregate([
+      { $match: { experience: { $in: ids }, status: { $nin: ["CANCELLED", "REFUNDED"] } } },
+      { $group: { _id: "$experience", booked: { $sum: { $ifNull: ["$quantity", 1] } } } },
+    ]);
+    const bookedMap = bookedAgg.reduce((acc, b) => {
+      acc[b._id.toString()] = b.booked || 0;
+      return acc;
+    }, {});
+    const payload = activities.map((exp) => {
+      const total = exp.maxParticipants || 1;
+      const booked = bookedMap[exp._id.toString()] || 0;
+      const availableSpots = Math.max(0, total - booked);
+      return { ...exp, bookedSpots: booked, availableSpots };
+    });
+    return res.json(payload);
   } catch (err) {
     console.error("getHostActivities error", err);
     return res.status(500).json({ message: "Server error" });
