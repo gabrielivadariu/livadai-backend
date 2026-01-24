@@ -52,6 +52,7 @@ const experienceSchema = new mongoose.Schema(
     languages: { type: [String], default: [] },
     isActive: { type: Boolean, default: true },
     reminderHostSent: { type: Boolean, default: false },
+    mediaCleanedAt: { type: Date },
   },
   { timestamps: true }
 );
