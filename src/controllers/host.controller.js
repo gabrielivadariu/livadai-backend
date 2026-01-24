@@ -213,25 +213,71 @@ const addHostReview = async (req, res) => {
   try {
     const { id } = req.params; // hostId
     const { experienceId, bookingId, rating, comment } = req.body;
-    if (!experienceId || !rating) return res.status(400).json({ message: "experienceId and rating required" });
+    if (!experienceId || !bookingId || !rating) {
+      return res.status(400).json({ message: "experienceId, bookingId and rating required" });
+    }
     const host = await User.findById(id);
     if (!host || host.role !== "HOST") return res.status(404).json({ message: "Host not found" });
 
-    const allowedStatuses = new Set(["PAID", "COMPLETED", "DEPOSIT_PAID"]);
     const booking = await Booking.findOne({
       _id: bookingId,
       experience: experienceId,
       host: id,
       explorer: req.user.id,
-      status: { $in: Array.from(allowedStatuses) },
-    });
-    if (!booking) return res.status(403).json({ message: "Cannot review without a completed/paid booking." });
+      status: "COMPLETED",
+    }).populate("experience", "endsAt endDate startsAt startDate durationMinutes");
+    if (!booking) {
+      return res.status(403).json({ message: "Cannot review without a completed booking." });
+    }
 
-    const review = await Review.findOneAndUpdate(
-      { host: id, experience: experienceId, user: req.user.id },
-      { rating, comment },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
-    );
+    const existing = await Review.findOne({ booking: bookingId });
+    if (existing) {
+      return res.status(409).json({ message: "Review already submitted for this booking." });
+    }
+
+    const exp = booking.experience;
+    const rawEnd = exp?.endsAt || exp?.endDate;
+    let endDate = rawEnd ? new Date(rawEnd) : null;
+    if (!endDate && exp?.startsAt && exp?.durationMinutes) {
+      const startDate = new Date(exp.startsAt);
+      if (!Number.isNaN(startDate.getTime())) {
+        endDate = new Date(startDate.getTime() + Number(exp.durationMinutes) * 60 * 1000);
+      }
+    }
+    if (!endDate && exp?.startDate && exp?.durationMinutes) {
+      const startDate = new Date(exp.startDate);
+      if (!Number.isNaN(startDate.getTime())) {
+        endDate = new Date(startDate.getTime() + Number(exp.durationMinutes) * 60 * 1000);
+      }
+    }
+    if (!endDate && exp?.startsAt) {
+      const startDate = new Date(exp.startsAt);
+      if (!Number.isNaN(startDate.getTime())) {
+        endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
+      }
+    }
+    if (!endDate && exp?.startDate) {
+      const startDate = new Date(exp.startDate);
+      if (!Number.isNaN(startDate.getTime())) {
+        endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
+      }
+    }
+    if (!endDate || Number.isNaN(endDate.getTime())) {
+      return res.status(400).json({ message: "Experience end date missing." });
+    }
+    const reviewOpenAt = new Date(endDate.getTime() + 48 * 60 * 60 * 1000);
+    if (new Date() <= reviewOpenAt) {
+      return res.status(400).json({ message: "Reviews are available 48h after the experience ends." });
+    }
+
+    const review = await Review.create({
+      host: id,
+      experience: experienceId,
+      booking: bookingId,
+      user: req.user.id,
+      rating,
+      comment,
+    });
 
     // Recompute host rating
     const agg = await Review.aggregate([

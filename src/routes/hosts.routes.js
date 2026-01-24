@@ -16,6 +16,6 @@ router.get("/me/profile", authenticate, authorize(["HOST"]), getMyHostProfile);
 router.get("/:id/reviews", getHostReviews);
 router.get("/:id/activities", getHostActivities);
 router.put("/me/profile", authenticate, authorize(["HOST"]), updateMyProfile);
-router.post("/:id/reviews", authenticate, authorize(["EXPLORER"]), addHostReview);
+router.post("/:id/reviews", authenticate, addHostReview);
 
 module.exports = router;
