@@ -31,6 +31,7 @@ const refundBooking = async (booking, reason = "Admin action") => {
       await payment.save();
     }
     booking.status = "REFUNDED";
+    booking.refundedAt = new Date();
     booking.payoutEligibleAt = null;
     await booking.save();
     try {
@@ -88,6 +89,7 @@ const applyRefundExplorer = async (bookingId) => {
   const booking = await Booking.findById(bookingId);
   if (!booking) return "Booking not found";
   booking.status = "CANCELLED";
+  booking.cancelledAt = new Date();
   booking.payoutEligibleAt = null;
   if (!booking.disputeResolvedAt) {
     booking.disputeResolvedAt = new Date();

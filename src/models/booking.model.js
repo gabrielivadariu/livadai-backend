@@ -49,6 +49,8 @@ const bookingSchema = new mongoose.Schema(
     chatArchivedAt: { type: Date },
     disputeResolvedAt: { type: Date },
     disputedAt: { type: Date },
+    cancelledAt: { type: Date },
+    refundedAt: { type: Date },
     disputeReason: {
       type: String,
       enum: ["NO_SHOW", "LOW_QUALITY", "SAFETY", "OTHER", null],

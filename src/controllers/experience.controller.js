@@ -263,6 +263,7 @@ const cancelExperience = async (req, res) => {
         }
       }
       bk.status = "CANCELLED";
+      bk.cancelledAt = new Date();
       await bk.save();
       try {
         await createNotification({

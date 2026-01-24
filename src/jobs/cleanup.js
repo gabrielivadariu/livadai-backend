@@ -51,6 +51,29 @@ const deleteCloudinaryMedia = async (urls) => {
   }
 };
 
+const getExperienceEndDate = (exp) => {
+  if (!exp) return null;
+  const rawEnd = exp.endsAt || exp.endDate;
+  if (rawEnd) {
+    const endDate = new Date(rawEnd);
+    if (!Number.isNaN(endDate.getTime())) return endDate;
+  }
+  const rawStart = exp.startsAt || exp.startDate;
+  if (rawStart && exp.durationMinutes) {
+    const startDate = new Date(rawStart);
+    if (!Number.isNaN(startDate.getTime())) {
+      return new Date(startDate.getTime() + Number(exp.durationMinutes) * 60 * 1000);
+    }
+  }
+  if (rawStart) {
+    const startDate = new Date(rawStart);
+    if (!Number.isNaN(startDate.getTime())) {
+      return new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
+    }
+  }
+  return null;
+};
+
 // Runs periodically to hide/delete stale experiences.
 // Rules:
 // - If experience has ended AND has no bookings -> hard delete.
@@ -61,22 +84,47 @@ const setupCleanupJob = () => {
     const now = new Date();
     try {
       const mediaCutoff = new Date(now.getTime() - 72 * 60 * 60 * 1000);
-      const mediaTargets = await Experience.find({
-        mediaCleanedAt: { $exists: false },
-        $and: [
-          { $or: [{ endsAt: { $lte: mediaCutoff } }, { endDate: { $lte: mediaCutoff } }] },
-          {
-            $or: [
-              { images: { $exists: true, $ne: [] } },
-              { videos: { $exists: true, $ne: [] } },
-              { mainImageUrl: { $nin: [null, ""] } },
-              { coverImageUrl: { $nin: [null, ""] } },
-            ],
-          },
-        ],
-      });
+      const closedStatuses = ["COMPLETED", "CANCELLED", "REFUNDED", "AUTO_COMPLETED", "NO_SHOW"];
+      const activeStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "PENDING_ATTENDANCE", "DISPUTED"];
+      const closedBookings = await Booking.find({
+        status: { $in: closedStatuses },
+      }).populate(
+        "experience",
+        "endsAt endDate startsAt startDate durationMinutes images videos mainImageUrl coverImageUrl mediaCleanedAt"
+      );
 
-      for (const exp of mediaTargets) {
+      for (const booking of closedBookings) {
+        const exp = booking.experience;
+        if (!exp || exp.mediaCleanedAt) continue;
+
+        const hasMedia =
+          (exp.images && exp.images.length) ||
+          (exp.videos && exp.videos.length) ||
+          exp.mainImageUrl ||
+          exp.coverImageUrl;
+        if (!hasMedia) {
+          exp.mediaCleanedAt = new Date();
+          await exp.save();
+          continue;
+        }
+
+        let eligibleAt = null;
+        if (["COMPLETED", "AUTO_COMPLETED", "NO_SHOW"].includes(booking.status)) {
+          eligibleAt = getExperienceEndDate(exp);
+        } else if (booking.status === "CANCELLED") {
+          eligibleAt = booking.cancelledAt || booking.updatedAt || booking.createdAt;
+        } else if (booking.status === "REFUNDED") {
+          eligibleAt = booking.refundedAt || booking.updatedAt || booking.createdAt;
+        }
+
+        if (!eligibleAt || eligibleAt > mediaCutoff) continue;
+
+        const activeExists = await Booking.exists({
+          experience: exp._id,
+          status: { $in: activeStatuses },
+        });
+        if (activeExists) continue;
+
         const urls = [
           ...(exp.images || []),
           ...(exp.videos || []),
@@ -90,7 +138,7 @@ const setupCleanupJob = () => {
         exp.coverImageUrl = null;
         exp.mediaCleanedAt = new Date();
         await exp.save();
-        console.log("Cleanup: removed experience media", { id: exp._id.toString() });
+        console.log("Cleanup: removed experience media", { id: exp._id.toString(), booking: booking._id.toString() });
       }
 
       const ended = await Experience.find({

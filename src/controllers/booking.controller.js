@@ -156,6 +156,7 @@ const cancelBookingByHost = async (req, res) => {
     }
 
     booking.status = "CANCELLED";
+    booking.cancelledAt = new Date();
     booking.payoutEligibleAt = null;
     await booking.save();
 
@@ -231,9 +232,11 @@ const updateAttendance = async (req, res) => {
     booking.attendanceStatus = status;
     if (status === "CONFIRMED") {
       booking.status = "COMPLETED";
+      booking.completedAt = new Date();
     }
     if (status === "NO_SHOW") {
       booking.status = "NO_SHOW";
+      booking.completedAt = new Date();
     }
     await booking.save();
     return res.json({ success: true });
