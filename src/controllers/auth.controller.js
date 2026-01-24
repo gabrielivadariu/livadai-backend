@@ -5,6 +5,14 @@ const crypto = require("crypto");
 const { sendEmail } = require("../utils/mailer");
 const { buildEmailVerificationEmail, buildWelcomeEmail, buildPasswordResetEmail } = require("../utils/emailTemplates");
 
+const passwordPolicyRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+const passwordPolicyMessage = "Password must be at least 8 characters and include uppercase, lowercase, number, and special character.";
+
+const validatePasswordStrength = (password) => {
+  if (!passwordPolicyRegex.test(password || "")) return passwordPolicyMessage;
+  return null;
+};
+
 const signToken = (user) => {
   return jwt.sign(
     {
@@ -43,6 +51,8 @@ const register = async (req, res) => {
       return res.status(400).json({ message: "name, email, password, confirmPassword, phone, phoneCountryCode required" });
     }
     if (password !== confirmPassword) return res.status(400).json({ message: "Passwords do not match" });
+    const strengthError = validatePasswordStrength(password);
+    if (strengthError) return res.status(400).json({ message: strengthError });
     if (!/^\+?\d{1,4}$/.test(phoneCountryCode)) return res.status(400).json({ message: "Invalid country code" });
     if (!/^\d{6,15}$/.test(String(phone))) return res.status(400).json({ message: "Invalid phone number" });
     if (termsAccepted !== true) return res.status(400).json({ message: "Terms must be accepted" });
@@ -197,7 +207,8 @@ const resetPassword = async (req, res) => {
     const { token, password, confirmPassword } = req.body || {};
     if (!token || !password || !confirmPassword) return res.status(400).json({ message: "token, password, confirmPassword required" });
     if (password !== confirmPassword) return res.status(400).json({ message: "Passwords do not match" });
-    if (password.length < 8) return res.status(400).json({ message: "Password too short" });
+    const strengthError = validatePasswordStrength(password);
+    if (strengthError) return res.status(400).json({ message: strengthError });
 
     const user = await User.findOne({
       resetPasswordToken: token,
@@ -266,7 +277,8 @@ const resetPasswordOtp = async (req, res) => {
       return res.status(400).json({ message: "email, otpCode, password, confirmPassword required" });
     }
     if (password !== confirmPassword) return res.status(400).json({ message: "Passwords do not match" });
-    if (password.length < 8) return res.status(400).json({ message: "Password too short" });
+    const strengthError = validatePasswordStrength(password);
+    if (strengthError) return res.status(400).json({ message: strengthError });
 
     const user = await User.findOne({ email });
     if (!user || !user.resetOtpCode || !user.resetOtpExpires) {
