@@ -230,7 +230,7 @@ const addHostReview = async (req, res) => {
       return res.status(403).json({ message: "Cannot review without a completed booking." });
     }
 
-    const existing = await Review.findOne({ booking: bookingId });
+    const existing = await Review.findOne({ booking: bookingId, user: req.user.id });
     if (existing) {
       return res.status(409).json({ message: "Review already submitted for this booking." });
     }

@@ -12,7 +12,6 @@ const reviewSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Booking",
       required: true,
-      unique: true,
     },
     user: {
       type: mongoose.Schema.Types.ObjectId,
@@ -25,6 +24,6 @@ const reviewSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-reviewSchema.index({ booking: 1 }, { unique: true });
+reviewSchema.index({ booking: 1, user: 1 }, { unique: true });
 
 module.exports = mongoose.model("Review", reviewSchema);

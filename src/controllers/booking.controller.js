@@ -1,6 +1,7 @@
 const Booking = require("../models/booking.model");
 const Experience = require("../models/experience.model");
 const Report = require("../models/report.model");
+const Review = require("../models/review.model");
 const { createNotification } = require("./notifications.controller");
 const User = require("../models/user.model");
 const Payment = require("../models/payment.model");
@@ -12,10 +13,27 @@ const { isPayoutEligible, logPayoutAttempt } = require("../utils/payout");
 const { sendContentReportEmail, sendDisputeEmail, sendUserReportEmail } = require("../utils/reports");
 const { recalcTrustedParticipant } = require("../utils/trust");
 
-const isPast = (date) => {
-  if (!date) return false;
-  const d = new Date(date);
-  return !Number.isNaN(d.getTime()) && d < new Date();
+const getExperienceEndDate = (exp) => {
+  if (!exp) return null;
+  const rawEnd = exp.endsAt || exp.endDate;
+  if (rawEnd) {
+    const endDate = new Date(rawEnd);
+    if (!Number.isNaN(endDate.getTime())) return endDate;
+  }
+  const rawStart = exp.startsAt || exp.startDate;
+  if (rawStart && exp.durationMinutes) {
+    const startDate = new Date(rawStart);
+    if (!Number.isNaN(startDate.getTime())) {
+      return new Date(startDate.getTime() + Number(exp.durationMinutes) * 60 * 1000);
+    }
+  }
+  if (rawStart) {
+    const startDate = new Date(rawStart);
+    if (!Number.isNaN(startDate.getTime())) {
+      return new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
+    }
+  }
+  return null;
 };
 
 const createBooking = async (req, res) => {
@@ -90,10 +108,29 @@ const getMyBookings = async (req, res) => {
     const bookings = await Booking.find({ explorer: req.user.id })
       .populate(
         "experience",
-        "title price currencyCode startDate endDate startTime endTime activityType remainingSpots maxParticipants soldOut host address"
+        "title price currencyCode startDate endDate startsAt endsAt durationMinutes startTime endTime activityType remainingSpots maxParticipants soldOut host address"
       )
       .populate("host", "name");
-    return res.json(bookings);
+    const bookingIds = bookings.map((b) => b._id);
+    const existingReviews = await Review.find({ booking: { $in: bookingIds } }).select("booking user");
+    const reviewedMap = new Set(existingReviews.map((r) => `${r.booking.toString()}::${r.user.toString()}`));
+    const now = new Date();
+    const data = bookings.map((b) => {
+      const exp = b.experience;
+      const endDate = getExperienceEndDate(exp);
+      const eligible =
+        b.status === "COMPLETED" &&
+        endDate &&
+        !Number.isNaN(endDate.getTime()) &&
+        now > new Date(endDate.getTime() + 48 * 60 * 60 * 1000);
+      const reviewKey = `${b._id.toString()}::${req.user.id}`;
+      return {
+        ...b.toObject(),
+        reviewEligible: !!eligible && !reviewedMap.has(reviewKey),
+        reviewExists: reviewedMap.has(reviewKey),
+      };
+    });
+    return res.json(data);
   } catch (err) {
     console.error("Get my bookings error", err);
     return res.status(500).json({ message: "Server error" });
