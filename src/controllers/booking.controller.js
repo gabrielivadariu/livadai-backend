@@ -481,7 +481,8 @@ const disputeBooking = async (req, res) => {
         user: booking.host,
         type: "BOOKING_DISPUTED",
         title: "Booking disputed",
-        message: `Booking for "${booking.experience?.title || "experience"}" was disputed. Payout is paused.`,
+        message:
+          "O experiență a fost raportată. Plata este temporar blocată până la clarificarea situației. / An experience has been reported. The payout is temporarily blocked while the issue is reviewed.",
         data: { bookingId: booking._id, activityId: booking.experience?._id || booking.experience },
       });
     } catch (err) {

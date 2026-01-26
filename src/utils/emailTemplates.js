@@ -308,14 +308,12 @@ const buildDisputeOpenedEmail = ({ experience, bookingId }) => {
   const bodyHtml = buildBilingualSection({
     roTitle: "Dispută deschisă",
     roBody: `
-      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">A fost deschisă o dispută pentru bookingul "${experience?.title || "LIVADAI"}".</p>
-      <p style="margin:0;font-size:15px;color:#334155;">Vom analiza situația și te vom anunța pașii următori.</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">O experiență a fost raportată. Plata este temporar blocată până la clarificarea situației.</p>
       ${bookingId ? `<p style="margin:10px 0 0 0;font-size:13px;color:#64748b;"><strong>Booking ID:</strong> ${bookingId}</p>` : ""}
     `,
     enTitle: "Dispute opened",
     enBody: `
-      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">A dispute has been opened for "${experience?.title || "LIVADAI"}".</p>
-      <p style="margin:0;font-size:15px;color:#334155;">We will review the case and follow up with next steps.</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">An experience has been reported. The payout is temporarily blocked while the issue is reviewed.</p>
       ${bookingId ? `<p style="margin:10px 0 0 0;font-size:13px;color:#64748b;"><strong>Booking ID:</strong> ${bookingId}</p>` : ""}
     `,
   });
