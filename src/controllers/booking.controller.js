@@ -444,7 +444,7 @@ const disputeBooking = async (req, res) => {
 
     // Create report entry
     const report = await Report.create({
-      type: "DISPUTE",
+      type: "BOOKING_DISPUTE",
       experience: booking.experience?._id || booking.experience,
       booking: booking._id,
       host: booking.host,
@@ -453,6 +453,7 @@ const disputeBooking = async (req, res) => {
       targetUserId: booking.host,
       reason,
       comment,
+      affectsPayout: true,
       deadlineAt: new Date(now.getTime() + 48 * 60 * 60 * 1000),
     });
 
@@ -532,6 +533,7 @@ const reportContent = async (req, res) => {
       targetUserId: experience.host?._id || experience.host,
       reason,
       comment,
+      affectsPayout: false,
       deadlineAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
     });
 
@@ -573,6 +575,7 @@ const reportUser = async (req, res) => {
       reporter: req.user?.id,
       reason,
       comment,
+      affectsPayout: false,
       deadlineAt: new Date(Date.now() + 48 * 60 * 60 * 1000),
     });
 

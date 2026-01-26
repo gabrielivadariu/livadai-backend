@@ -3,6 +3,8 @@ const jwt = require("jsonwebtoken");
 const { sendEmail } = require("../utils/mailer");
 const Experience = require("../models/experience.model");
 const User = require("../models/user.model");
+const Report = require("../models/report.model");
+const { sendContentReportEmail } = require("../utils/reports");
 const { authenticate } = require("../middleware/auth.middleware");
 
 const router = Router();
@@ -27,28 +29,18 @@ router.post("/", authenticate, async (req, res) => {
     const reportedUser = await User.findById(reportedUserId).select("name email");
     const reporter = await User.findById(req.user.id).select("name email");
 
-    const baseUrl = process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || "http://localhost:4000";
-    const tokenPayload = {
-      exp: Math.floor(Date.now() / 1000) + 60 * 60,
-      experienceId,
-      reportedUserId,
-    };
-    const token = buildActionToken(tokenPayload);
-    const actionLink = (action) => `${baseUrl}/admin/report-action?action=${action}&experienceId=${experienceId}&userId=${reportedUserId}&token=${token}`;
-
-    const html = `
-      <h3>New report</h3>
-      <p><strong>Reason:</strong> ${reason || "(not provided)"}</p>
-      <p><strong>Comment:</strong> ${comment || "(not provided)"}</p>
-      <p><strong>Experience:</strong> ${experience?.title || experienceId} - <a href="${baseUrl}/experiences/${experienceId}">View</a></p>
-      <p><strong>Reported user:</strong> ${reportedUser?.name || reportedUserId} (${reportedUser?.email || "n/a"})</p>
-      <p><strong>Reporter:</strong> ${reporter?.name || req.user.id} (${reporter?.email || "n/a"})</p>
-      <p>
-        <a href="${actionLink("ban")}">Ban user</a> |
-        <a href="${actionLink("hide")}">Hide experience</a> |
-        <a href="${actionLink("ignore")}">Ignore report</a>
-      </p>
-    `;
+    const report = await Report.create({
+      type: "CONTENT",
+      experience: experienceId,
+      host: experience?.host,
+      reporter: req.user?.id,
+      targetType: "EXPERIENCE",
+      targetUserId: reportedUserId,
+      reason,
+      comment,
+      affectsPayout: false,
+      deadlineAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
+    });
 
     const reportsEmail = process.env.REPORTS_EMAIL;
     if (!reportsEmail) {
@@ -56,11 +48,13 @@ router.post("/", authenticate, async (req, res) => {
       return res.json({ success: true });
     }
 
-    await sendEmail({
-      to: reportsEmail,
-      subject: `Report: ${experience?.title || experienceId}`,
-      html,
-      type: "report",
+    await sendContentReportEmail({
+      experience,
+      reporter,
+      reason,
+      comment,
+      reportsEmail,
+      reportId: report._id,
     });
 
     return res.json({ success: true });

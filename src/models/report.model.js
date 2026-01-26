@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 
 const reportSchema = new mongoose.Schema(
   {
-    type: { type: String, enum: ["CONTENT", "DISPUTE", "USER"], required: true },
+    type: { type: String, enum: ["CONTENT", "BOOKING_DISPUTE", "USER", "STRIPE_DISPUTE"], required: true },
     experience: { type: mongoose.Schema.Types.ObjectId, ref: "Experience" },
     booking: { type: mongoose.Schema.Types.ObjectId, ref: "Booking" },
     host: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -11,6 +11,7 @@ const reportSchema = new mongoose.Schema(
     targetUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     reason: { type: String },
     comment: { type: String, maxlength: 300 },
+    affectsPayout: { type: Boolean, default: false },
     status: { type: String, enum: ["OPEN", "HANDLED", "IGNORED"], default: "OPEN" },
     deadlineAt: { type: Date },
     handledAt: { type: Date },

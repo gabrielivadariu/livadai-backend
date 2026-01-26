@@ -15,6 +15,7 @@ const User = require("../models/user.model");
 const Transaction = require("../models/transaction.model");
 const Payment = require("../models/payment.model");
 const Booking = require("../models/booking.model");
+const Report = require("../models/report.model");
 const { handlePaymentSuccess } = require("../controllers/payment.controller");
 const WebhookEvent = require("../models/webhookEvent.model");
 
@@ -235,6 +236,24 @@ webhookRouter.post(
               booking.disputedAt = booking.disputedAt || new Date();
               booking.disputeResolvedAt = null;
               await booking.save();
+              const existing = await Report.findOne({
+                booking: booking._id,
+                type: { $in: ["BOOKING_DISPUTE", "STRIPE_DISPUTE"] },
+              });
+              if (!existing) {
+                await Report.create({
+                  type: "STRIPE_DISPUTE",
+                  experience: booking.experience,
+                  booking: booking._id,
+                  host: booking.host,
+                  targetType: "USER",
+                  targetUserId: booking.host,
+                  reason: "STRIPE_DISPUTE",
+                  comment: dispute.reason || null,
+                  affectsPayout: false,
+                  deadlineAt: new Date(Date.now() + 48 * 60 * 60 * 1000),
+                });
+              }
             }
           }
           break;
@@ -256,6 +275,17 @@ webhookRouter.post(
                 booking.payoutEligibleAt = new Date(booking.completedAt.getTime() + 72 * 60 * 60 * 1000);
               }
               await booking.save();
+              const report = await Report.findOne({
+                booking: booking._id,
+                type: { $in: ["BOOKING_DISPUTE", "STRIPE_DISPUTE"] },
+                status: "OPEN",
+              });
+              if (report) {
+                report.status = "HANDLED";
+                report.handledAt = new Date();
+                report.actionTaken = resolvedStatus;
+                await report.save();
+              }
             }
           }
           break;
