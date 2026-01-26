@@ -28,6 +28,8 @@ const CHAT_STATUSES = new Set([
   "AUTO_COMPLETED",
   "NO_SHOW",
   "DISPUTED",
+  "DISPUTE_WON",
+  "DISPUTE_LOST",
 ]);
 
 const isChatArchived = (booking) => {

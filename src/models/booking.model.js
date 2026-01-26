@@ -38,6 +38,8 @@ const bookingSchema = new mongoose.Schema(
         "NO_SHOW",
         "PENDING_ATTENDANCE",
         "DISPUTED",
+        "DISPUTE_WON",
+        "DISPUTE_LOST",
       ],
       default: "PENDING",
     },

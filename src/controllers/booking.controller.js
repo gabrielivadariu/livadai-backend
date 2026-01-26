@@ -36,6 +36,11 @@ const getExperienceEndDate = (exp) => {
   return null;
 };
 
+const isDisputeLocked = (booking) => {
+  if (!booking?.status) return false;
+  return ["DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"].includes(booking.status);
+};
+
 const createBooking = async (req, res) => {
   try {
     const { experienceId, date, timeSlot } = req.body;
@@ -171,6 +176,7 @@ const cancelBookingByHost = async (req, res) => {
     );
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     if (booking.host.toString() !== req.user.id) return res.status(403).json({ message: "Forbidden" });
+    if (isDisputeLocked(booking)) return res.status(409).json({ message: "Booking is disputed" });
     if (["CANCELLED", "REFUNDED"].includes(booking.status)) {
       return res.status(400).json({ message: "Booking already cancelled" });
     }
@@ -265,6 +271,7 @@ const updateAttendance = async (req, res) => {
     if (booking.host.toString() !== req.user.id) {
       return res.status(403).json({ message: "Forbidden" });
     }
+    if (isDisputeLocked(booking)) return res.status(409).json({ message: "Booking is disputed" });
 
     booking.attendanceStatus = status;
     if (status === "CONFIRMED") {
@@ -289,7 +296,7 @@ const confirmAttendance = async (req, res) => {
     const booking = await Booking.findById(id).populate("experience", "host startDate endDate startsAt endsAt title");
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     if (booking.host.toString() !== req.user.id) return res.status(403).json({ message: "Forbidden" });
-    if (booking.status === "DISPUTED") return res.status(409).json({ message: "Booking is disputed" });
+    if (isDisputeLocked(booking)) return res.status(409).json({ message: "Booking is disputed" });
 
     const start =
       booking.experience?.startsAt || booking.experience?.startDate || booking.date || booking.experience?.endDate || booking.experience?.endsAt;
@@ -351,7 +358,7 @@ const markNoShow = async (req, res) => {
     const booking = await Booking.findById(id).populate("experience", "host startDate endDate startsAt endsAt title");
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     if (booking.host.toString() !== req.user.id) return res.status(403).json({ message: "Forbidden" });
-    if (booking.status === "DISPUTED") return res.status(409).json({ message: "Booking is disputed" });
+    if (isDisputeLocked(booking)) return res.status(409).json({ message: "Booking is disputed" });
 
     const start =
       booking.experience?.startsAt || booking.experience?.startDate || booking.date || booking.experience?.endDate || booking.experience?.endsAt;
@@ -401,7 +408,7 @@ const disputeBooking = async (req, res) => {
     );
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     if (booking.explorer.toString() !== req.user.id) return res.status(403).json({ message: "Forbidden" });
-    if (booking.status === "DISPUTED") return res.status(409).json({ message: "Already disputed" });
+    if (isDisputeLocked(booking)) return res.status(409).json({ message: "Already disputed" });
     if (["CANCELLED"].includes(booking.status))
       return res.status(400).json({ message: "Cannot dispute cancelled booking" });
 
@@ -424,6 +431,16 @@ const disputeBooking = async (req, res) => {
     booking.disputeComment = comment || null;
     booking.disputeResolvedAt = null;
     await booking.save();
+
+    try {
+      await Payment.findOneAndUpdate(
+        { booking: booking._id },
+        { status: "DISPUTED" },
+        { new: true }
+      );
+    } catch (err) {
+      console.error("Update payment disputed error", err);
+    }
 
     // Create report entry
     const report = await Report.create({

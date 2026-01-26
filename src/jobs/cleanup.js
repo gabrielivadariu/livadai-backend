@@ -84,7 +84,7 @@ const setupCleanupJob = () => {
     const now = new Date();
     try {
       const mediaCutoff = new Date(now.getTime() - 72 * 60 * 60 * 1000);
-      const closedStatuses = ["COMPLETED", "CANCELLED", "REFUNDED", "AUTO_COMPLETED", "NO_SHOW"];
+      const closedStatuses = ["COMPLETED", "CANCELLED", "REFUNDED", "AUTO_COMPLETED", "NO_SHOW", "DISPUTE_WON", "DISPUTE_LOST"];
       const activeStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "PENDING_ATTENDANCE", "DISPUTED"];
       const closedBookings = await Booking.find({
         status: { $in: closedStatuses },

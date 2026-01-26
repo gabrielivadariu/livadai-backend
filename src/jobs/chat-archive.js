@@ -27,7 +27,7 @@ const setupChatArchiveJob = () => {
     try {
       const bookings = await Booking.find({
         $or: [{ chatArchivedAt: { $exists: false } }, { chatArchivedAt: null }],
-        status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "COMPLETED", "AUTO_COMPLETED", "NO_SHOW", "DISPUTED"] },
+        status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "COMPLETED", "AUTO_COMPLETED", "NO_SHOW", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"] },
       }).populate("experience", "startsAt endsAt startDate endDate durationMinutes");
 
       for (const bk of bookings) {

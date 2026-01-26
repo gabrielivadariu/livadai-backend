@@ -85,6 +85,12 @@ const createCheckout = async (req, res) => {
       payment_method_types: ["card"],
       payment_intent_data: {
         transfer_data: { destination: host.stripeAccountId },
+        metadata: {
+          bookingId: booking._id.toString(),
+          experienceId: exp._id.toString(),
+          explorerId: (req.user?._id || req.user?.id)?.toString(),
+          hostId: exp.host?.toString?.() || exp.host?.toString?.(),
+        },
       },
       line_items: [
         {
@@ -111,9 +117,14 @@ const createCheckout = async (req, res) => {
       { booking: booking._id },
       {
         booking: booking._id,
+        host: exp.host,
+        explorer: req.user.id,
+        stripeAccountId: host.stripeAccountId,
         stripePaymentIntentId: session.payment_intent,
         stripeSessionId: session.id,
         amount,
+        currency: isFree ? depositCurrency : baseCurrency,
+        platformFee: 0,
         paymentType: isFree ? "DEPOSIT" : "PAID_BOOKING",
         status: "INITIATED",
       },

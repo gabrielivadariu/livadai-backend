@@ -25,12 +25,16 @@ const aggregateHostBalances = async (hostId) => {
       continue;
     }
 
-    if (bk.status === "COMPLETED" && bk.payoutEligibleAt && new Date() < new Date(bk.payoutEligibleAt)) {
+    if (
+      (bk.status === "COMPLETED" || bk.status === "DISPUTE_WON") &&
+      bk.payoutEligibleAt &&
+      new Date() < new Date(bk.payoutEligibleAt)
+    ) {
       pending += amt;
       continue;
     }
 
-    if (["DISPUTED", "NO_SHOW", "CANCELLED"].includes(bk.status)) {
+    if (["DISPUTED", "DISPUTE_LOST", "NO_SHOW", "CANCELLED", "REFUNDED"].includes(bk.status)) {
       blocked += amt;
       continue;
     }

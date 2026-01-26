@@ -1,10 +1,12 @@
 const isPayoutEligible = (booking) => {
   if (!booking) return false;
   const now = new Date();
-  if (!["COMPLETED", "AUTO_COMPLETED"].includes(booking.status)) return false;
+  if (!["COMPLETED", "AUTO_COMPLETED", "DISPUTE_WON"].includes(booking.status)) return false;
   if (!booking.payoutEligibleAt) return false;
   if (now < new Date(booking.payoutEligibleAt)) return false;
-  if (booking.status === "DISPUTED" || booking.disputedAt) return false;
+  if (booking.status === "DISPUTED") return false;
+  if (booking.status === "DISPUTE_LOST") return false;
+  if (booking.disputedAt && !booking.disputeResolvedAt) return false;
   return true;
 };
 

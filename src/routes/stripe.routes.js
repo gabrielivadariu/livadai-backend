@@ -13,6 +13,8 @@ const {
 const stripe = require("../config/stripe");
 const User = require("../models/user.model");
 const Transaction = require("../models/transaction.model");
+const Payment = require("../models/payment.model");
+const Booking = require("../models/booking.model");
 const { handlePaymentSuccess } = require("../controllers/payment.controller");
 const WebhookEvent = require("../models/webhookEvent.model");
 
@@ -53,7 +55,16 @@ webhookRouter.post(
     }
 
     try {
-      const allowed = new Set(["checkout.session.completed", "payment_intent.succeeded", "account.updated"]);
+      const allowed = new Set([
+        "checkout.session.completed",
+        "payment_intent.succeeded",
+        "payment_intent.payment_failed",
+        "charge.refunded",
+        "refund.updated",
+        "charge.dispute.created",
+        "charge.dispute.closed",
+        "account.updated",
+      ]);
       if (!allowed.has(event.type)) {
         console.log("Ignored Stripe event:", event.type);
         return res.status(200).json({ received: true, ignored: true });
@@ -108,15 +119,144 @@ webhookRouter.post(
         }
         case "payment_intent.succeeded": {
           const pi = event.data.object;
+          const paymentIntentId = pi.id;
+          const chargeId = pi.latest_charge || pi.charges?.data?.[0]?.id;
+          const amount = pi.amount_received || pi.amount || 0;
+          const currency = pi.currency || "ron";
+          const bookingId = pi.metadata?.bookingId;
           const hostId = pi.metadata?.hostId;
+          const explorerId = pi.metadata?.explorerId;
+          const stripeAccountId = pi.transfer_data?.destination || null;
+
+          let payment = null;
+          if (paymentIntentId) {
+            payment = await Payment.findOne({ stripePaymentIntentId: paymentIntentId });
+          }
+          if (!payment && chargeId) {
+            payment = await Payment.findOne({ stripeChargeId: chargeId });
+          }
+          if (!payment && bookingId) {
+            payment = await Payment.findOne({ booking: bookingId });
+          }
+          if (payment) {
+            payment.status = "CONFIRMED";
+            payment.stripeChargeId = chargeId || payment.stripeChargeId;
+            payment.amount = amount || payment.amount;
+            payment.currency = currency || payment.currency;
+            payment.host = payment.host || hostId || payment.host;
+            payment.explorer = payment.explorer || explorerId || payment.explorer;
+            payment.stripeAccountId = payment.stripeAccountId || stripeAccountId;
+            await payment.save();
+          }
+
           if (hostId) {
-            await Transaction.create({
-              user: hostId,
-              amount: pi.amount_received || pi.amount || 0,
-              currency: pi.currency || "ron",
-              type: "payment",
-              stripePaymentIntentId: pi.id,
-            });
+            await Transaction.findOneAndUpdate(
+              { stripePaymentIntentId: paymentIntentId },
+              {
+                user: hostId,
+                booking: payment?.booking,
+                stripeAccountId: stripeAccountId,
+                amount,
+                currency,
+                type: "payment",
+                stripePaymentIntentId: paymentIntentId,
+                stripeChargeId: chargeId,
+                status: "CONFIRMED",
+                platformFee: payment?.platformFee || payment?.livadaiFee || 0,
+              },
+              { upsert: true, new: true }
+            );
+          }
+          break;
+        }
+        case "payment_intent.payment_failed": {
+          const pi = event.data.object;
+          const paymentIntentId = pi.id;
+          if (paymentIntentId) {
+            await Payment.findOneAndUpdate(
+              { stripePaymentIntentId: paymentIntentId },
+              { status: "FAILED" },
+              { new: true }
+            );
+          }
+          break;
+        }
+        case "charge.refunded": {
+          const charge = event.data.object;
+          const paymentIntentId = charge.payment_intent;
+          const chargeId = charge.id;
+          const payment =
+            (paymentIntentId && (await Payment.findOne({ stripePaymentIntentId: paymentIntentId }))) ||
+            (chargeId && (await Payment.findOne({ stripeChargeId: chargeId })));
+          if (payment) {
+            payment.status = "REFUNDED";
+            payment.stripeChargeId = payment.stripeChargeId || chargeId;
+            await payment.save();
+            const booking = await Booking.findById(payment.booking);
+            if (booking) {
+              if (booking.status !== "CANCELLED") {
+                booking.status = "REFUNDED";
+              }
+              booking.refundedAt = new Date();
+              await booking.save();
+            }
+          }
+          break;
+        }
+        case "refund.updated": {
+          const refund = event.data.object;
+          const chargeId = refund.charge;
+          if (refund.status !== "succeeded") break;
+          const payment = chargeId ? await Payment.findOne({ stripeChargeId: chargeId }) : null;
+          if (payment) {
+            payment.status = "REFUNDED";
+            await payment.save();
+            const booking = await Booking.findById(payment.booking);
+            if (booking) {
+              if (booking.status !== "CANCELLED") {
+                booking.status = "REFUNDED";
+              }
+              booking.refundedAt = new Date();
+              await booking.save();
+            }
+          }
+          break;
+        }
+        case "charge.dispute.created": {
+          const dispute = event.data.object;
+          const chargeId = dispute.charge;
+          const payment = chargeId ? await Payment.findOne({ stripeChargeId: chargeId }) : null;
+          if (payment) {
+            payment.status = "DISPUTED";
+            await payment.save();
+            const booking = await Booking.findById(payment.booking);
+            if (booking) {
+              booking.status = "DISPUTED";
+              booking.disputedAt = booking.disputedAt || new Date();
+              booking.disputeResolvedAt = null;
+              await booking.save();
+            }
+          }
+          break;
+        }
+        case "charge.dispute.closed": {
+          const dispute = event.data.object;
+          const chargeId = dispute.charge;
+          const resolution = dispute.status;
+          const resolvedStatus = resolution === "won" ? "DISPUTE_WON" : "DISPUTE_LOST";
+          const payment = chargeId ? await Payment.findOne({ stripeChargeId: chargeId }) : null;
+          if (payment) {
+            payment.status = resolvedStatus;
+            await payment.save();
+            const booking = await Booking.findById(payment.booking);
+            if (booking) {
+              booking.status = resolvedStatus;
+              booking.disputeResolvedAt = new Date();
+              if (resolvedStatus === "DISPUTE_WON" && booking.completedAt && !booking.payoutEligibleAt) {
+                booking.payoutEligibleAt = new Date(booking.completedAt.getTime() + 72 * 60 * 60 * 1000);
+              }
+              await booking.save();
+            }
           }
           break;
         }
