@@ -26,6 +26,7 @@ const setupCleanupJob = require("./src/jobs/cleanup");
 const setupAttendanceJob = require("./src/jobs/attendance");
 const setupReconcilePaymentsJob = require("./src/jobs/reconcilePayments");
 const setupChatArchiveJob = require("./src/jobs/chat-archive");
+const setupFavoritesCleanupJob = require("./src/jobs/favorites-cleanup");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -69,6 +70,7 @@ const start = async () => {
     setupAttendanceJob();
     setupReconcilePaymentsJob();
     setupChatArchiveJob();
+    setupFavoritesCleanupJob();
   } catch (err) {
     console.error("Server start failed", err);
     process.exit(1);
