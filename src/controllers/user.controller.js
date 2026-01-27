@@ -188,8 +188,24 @@ const getMyFavorites = async (req, res) => {
         select: "title images price city country startsAt startDate address category host rating_avg rating_count",
       });
     if (!user) return res.status(404).json({ message: "User not found" });
+    const now = new Date();
     const favorites = (user.favorites || []).filter(Boolean);
-    return res.json(favorites);
+    const futureFavorites = favorites.filter((exp) => {
+      const startValue = exp?.startsAt || exp?.startDate;
+      if (!startValue) return false;
+      const startDate = new Date(startValue);
+      if (Number.isNaN(startDate.getTime())) return false;
+      return startDate > now;
+    });
+    if (futureFavorites.length !== favorites.length) {
+      try {
+        const keepIds = futureFavorites.map((exp) => exp._id);
+        await User.findByIdAndUpdate(req.user.id, { favorites: keepIds });
+      } catch (cleanupErr) {
+        console.error("favorites cleanup error", cleanupErr);
+      }
+    }
+    return res.json(futureFavorites);
   } catch (err) {
     console.error("getMyFavorites error", err);
     return res.status(500).json({ message: "Server error" });
