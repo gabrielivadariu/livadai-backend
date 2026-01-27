@@ -420,10 +420,12 @@ const getExperienceById = async (req, res) => {
 
 const getExperiencesMap = async (req, res) => {
   try {
+    const now = new Date();
     const exps = await Experience.find({
       isActive: true,
       soldOut: { $ne: true },
       status: "published",
+      startsAt: { $gt: now },
       latitude: { $nin: [null, 0] },
       longitude: { $nin: [null, 0] },
     })
