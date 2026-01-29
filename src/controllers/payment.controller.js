@@ -27,7 +27,20 @@ const createCheckout = async (req, res) => {
     const host = await User.findById(exp.host);
     if (host?.isBanned) return res.status(403).json({ message: "Host banned / experience disabled" });
     if (!host?.stripeAccountId || !host?.isStripeChargesEnabled) {
-      return res.status(400).json({ message: "Host payout account not ready" });
+      if (host?.stripeAccountId) {
+        try {
+          const acct = await stripe.accounts.retrieve(host.stripeAccountId);
+          host.isStripeChargesEnabled = !!acct?.charges_enabled;
+          host.isStripePayoutsEnabled = !!acct?.payouts_enabled;
+          host.isStripeDetailsSubmitted = !!acct?.details_submitted;
+          await host.save();
+        } catch (err) {
+          console.error("Stripe account refresh failed", err?.message || err);
+        }
+      }
+      if (!host?.stripeAccountId || !host?.isStripeChargesEnabled) {
+        return res.status(400).json({ message: "Host payout account not ready" });
+      }
     }
     const now = new Date();
     const starts = exp.startsAt || exp.startDate;
