@@ -91,7 +91,10 @@ const createCheckout = async (req, res) => {
     });
 
     const baseUrl = process.env.FRONTEND_URL || process.env.APP_URL || "https://app.livadai.com";
-    const successUrl = `${baseUrl.replace(/\/$/, "")}/payment-success?session_id={CHECKOUT_SESSION_ID}`;
+    const appScheme = process.env.APP_DEEP_LINK_SCHEME || "livadaiapp";
+    const successUrl = req.body?.returnToApp
+      ? `${appScheme}://payment-success?session_id={CHECKOUT_SESSION_ID}`
+      : `${baseUrl.replace(/\/$/, "")}/payment-success?session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${baseUrl.replace(/\/$/, "")}/payment-cancel`;
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
