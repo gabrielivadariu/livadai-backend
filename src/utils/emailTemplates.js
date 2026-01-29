@@ -361,6 +361,33 @@ const buildRefundInitiatedEmail = ({ language, firstName, experienceTitle, exper
   return { subject, html: body };
 };
 
+const buildRefundCompletedEmail = ({ language, firstName, experienceTitle, amount, currency }) => {
+  const isRo = (language || "en").toLowerCase().startsWith("ro");
+  const subject = isRo
+    ? "Refund finalizat pentru experiența ta"
+    : "Your refund has been completed";
+  const body = isRo
+    ? `
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Salut ${firstName},</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Refund-ul pentru experiența „${experienceTitle}” a fost finalizat cu succes.</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Banii au fost returnați prin Stripe și vor apărea în contul tău în funcție de banca ta (de obicei în 1–3 zile lucrătoare).</p>
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Detalii:</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">– Experiență: ${experienceTitle}<br />– Sumă rambursată: ${amount} ${currency}</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Îți mulțumim pentru răbdare.<br />Dacă ai întrebări, ne poți contacta oricând la support@livadai.com.</p>
+      <p style="margin:0;font-size:15px;color:#334155;">Cu grijă,<br />Echipa LIVADAI</p>
+    `
+    : `
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Hi ${firstName},</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">The refund for the experience “${experienceTitle}” has been successfully completed.</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">The funds have been returned via Stripe and will appear in your account depending on your bank (usually within 1–3 business days).</p>
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Details:</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">– Experience: ${experienceTitle}<br />– Refunded amount: ${amount} ${currency}</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Thank you for your patience.<br />If you have any questions, feel free to contact us at support@livadai.com.</p>
+      <p style="margin:0;font-size:15px;color:#334155;">Best regards,<br />The LIVADAI Team</p>
+    `;
+  return { subject, html: body };
+};
+
 module.exports = {
   formatExperienceDate,
   formatExperienceLocation,
@@ -378,4 +405,5 @@ module.exports = {
   buildAttendanceReminderEmail,
   buildDisputeOpenedEmail,
   buildRefundInitiatedEmail,
+  buildRefundCompletedEmail,
 };

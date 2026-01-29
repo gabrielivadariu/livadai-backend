@@ -26,6 +26,7 @@ const setupCleanupJob = require("./src/jobs/cleanup");
 const setupAttendanceJob = require("./src/jobs/attendance");
 const setupReconcilePaymentsJob = require("./src/jobs/reconcilePayments");
 const setupChatArchiveJob = require("./src/jobs/chat-archive");
+const setupRefundRetryJob = require("./src/jobs/refund-retry");
 const setupFavoritesCleanupJob = require("./src/jobs/favorites-cleanup");
 
 const app = express();
@@ -71,6 +72,7 @@ const start = async () => {
     setupReconcilePaymentsJob();
     setupChatArchiveJob();
     setupFavoritesCleanupJob();
+    setupRefundRetryJob();
   } catch (err) {
     console.error("Server start failed", err);
     process.exit(1);

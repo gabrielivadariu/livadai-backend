@@ -54,6 +54,9 @@ const bookingSchema = new mongoose.Schema(
     disputedAt: { type: Date },
     cancelledAt: { type: Date },
     refundedAt: { type: Date },
+    refundAttempts: { type: Number, default: 0 },
+    lastRefundAttemptAt: { type: Date },
+    refundSuccessEmailSent: { type: Boolean, default: false },
     disputeReason: {
       type: String,
       enum: ["NO_SHOW", "LOW_QUALITY", "SAFETY", "OTHER", null],
