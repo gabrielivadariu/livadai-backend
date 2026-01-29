@@ -34,7 +34,7 @@ const aggregateHostBalances = async (hostId) => {
       continue;
     }
 
-    if (["DISPUTED", "DISPUTE_LOST", "NO_SHOW", "CANCELLED", "REFUNDED"].includes(bk.status)) {
+    if (["DISPUTED", "DISPUTE_LOST", "NO_SHOW", "CANCELLED", "REFUNDED", "REFUND_FAILED"].includes(bk.status)) {
       blocked += amt;
       continue;
     }

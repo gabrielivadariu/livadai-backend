@@ -248,23 +248,30 @@ const cancelExperience = async (req, res) => {
 
     // Refund paid bookings and notify explorers
     for (const bk of bookings) {
-      if (["PAID", "DEPOSIT_PAID"].includes(bk.status)) {
+      if (["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"].includes(bk.status)) {
+        let refunded = false;
         const payments = await Payment.find({ booking: bk._id, status: "CONFIRMED" });
         for (const pay of payments) {
-          if (pay.stripePaymentIntentId) {
-            try {
-              await stripe.refunds.create({ payment_intent: pay.stripePaymentIntentId });
-              pay.status = "REFUNDED";
-              await pay.save();
-            } catch (err) {
-              console.error("Refund failed", err.message);
-            }
+          if (!pay.stripePaymentIntentId) continue;
+          try {
+            await stripe.refunds.create({ payment_intent: pay.stripePaymentIntentId });
+            pay.status = "REFUNDED";
+            await pay.save();
+            refunded = true;
+          } catch (err) {
+            console.error("Refund failed", err.message);
           }
         }
+        bk.status = refunded ? "REFUNDED" : "REFUND_FAILED";
+        if (refunded) {
+          bk.refundedAt = new Date();
+        }
+        await bk.save();
+      } else if (!["CANCELLED", "REFUNDED"].includes(bk.status)) {
+        bk.status = "CANCELLED";
+        bk.cancelledAt = new Date();
+        await bk.save();
       }
-      bk.status = "CANCELLED";
-      bk.cancelledAt = new Date();
-      await bk.save();
       try {
         await createNotification({
           user: bk.explorer,
@@ -299,7 +306,7 @@ const cancelExperience = async (req, res) => {
       }
     }
 
-    exp.status = "cancelled";
+    exp.status = "CANCELLED";
     exp.isActive = false;
     exp.soldOut = true;
     exp.remainingSpots = 0;

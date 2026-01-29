@@ -14,7 +14,7 @@ const experienceSchema = new mongoose.Schema(
     maxParticipants: { type: Number, default: 1 },
     remainingSpots: { type: Number, default: 1 },
     soldOut: { type: Boolean, default: false },
-    status: { type: String, enum: ["draft", "published", "cancelled", "DISABLED"], default: "published" },
+    status: { type: String, enum: ["draft", "published", "cancelled", "CANCELLED", "DISABLED"], default: "published" },
     environment: { type: String, enum: ["INDOOR", "OUTDOOR", "BOTH"], default: "OUTDOOR" },
     // Schedule (new)
     startsAt: { type: Date, required: true },

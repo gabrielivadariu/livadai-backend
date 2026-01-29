@@ -33,6 +33,7 @@ const bookingSchema = new mongoose.Schema(
         "PAID",
         "CANCELLED",
         "REFUNDED",
+        "REFUND_FAILED",
         "COMPLETED",
         "AUTO_COMPLETED",
         "NO_SHOW",
