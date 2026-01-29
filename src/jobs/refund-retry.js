@@ -2,6 +2,7 @@ const stripe = require("../config/stripe");
 const Booking = require("../models/booking.model");
 const Payment = require("../models/payment.model");
 const { sendEmail } = require("../utils/mailer");
+const { createNotification } = require("../controllers/notifications.controller");
 const { buildRefundCompletedEmail } = require("../utils/emailTemplates");
 
 const RESEND_AFTER_MS = 6 * 60 * 60 * 1000;
@@ -15,9 +16,9 @@ const resolveLanguage = (user) => {
   return "en";
 };
 
-const getFirstName = (user) => {
+const getFirstName = (user, language) => {
   const name = user?.displayName || user?.name || "";
-  if (!name) return "there";
+  if (!name) return language === "ro" ? "acolo" : "there";
   return name.split(" ")[0] || name;
 };
 
@@ -77,12 +78,11 @@ const setupRefundRetryJob = () => {
 
         if (bk.refundSuccessEmailSent) continue;
         const explorer = bk.explorer;
-        if (!explorer?.email) continue;
         const amountMinor = payment?.amount || bk.amount || bk.depositAmount || 0;
         const amount = (Number(amountMinor) / 100).toFixed(2);
         const currency = (payment?.currency || bk.currency || bk.depositCurrency || "RON").toUpperCase();
         const language = resolveLanguage(explorer);
-        const firstName = getFirstName(explorer);
+        const firstName = getFirstName(explorer, language);
         const experienceTitle = bk.experience?.title || "LIVADAI";
         const emailPayload = buildRefundCompletedEmail({
           language,
@@ -92,13 +92,30 @@ const setupRefundRetryJob = () => {
           currency,
         });
         try {
-          await sendEmail({
-            to: explorer.email,
-            subject: emailPayload.subject,
-            html: emailPayload.html,
-            type: "booking_cancelled",
-            userId: explorer._id,
+          if (explorer?.email) {
+            await sendEmail({
+              to: explorer.email,
+              subject: emailPayload.subject,
+              html: emailPayload.html,
+              type: "booking_cancelled",
+              userId: explorer._id,
+            });
+          }
+
+          const notifTitle = language === "ro" ? "Refund confirmat" : "Refund confirmed";
+          const notifMessage =
+            language === "ro"
+              ? `Refund confirmat pentru experiența ${experienceTitle ? `„${experienceTitle}”` : "ta"} – ${amount} ${currency}`
+              : `Refund confirmed for the experience ${experienceTitle ? `“${experienceTitle}”` : "you booked"} – ${amount} ${currency}`;
+          await createNotification({
+            user: explorer?._id,
+            type: "BOOKING_CANCELLED",
+            title: notifTitle,
+            message: notifMessage,
+            data: { bookingId: bk._id, activityId: bk.experience?._id, activityTitle: experienceTitle },
+            push: true,
           });
+
           bk.refundSuccessEmailSent = true;
           await bk.save();
         } catch (err) {

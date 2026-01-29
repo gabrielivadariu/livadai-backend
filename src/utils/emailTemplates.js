@@ -361,6 +361,31 @@ const buildRefundInitiatedEmail = ({ language, firstName, experienceTitle, exper
   return { subject, html: body };
 };
 
+const buildExperienceCancelledNoticeEmail = ({ language, firstName, experienceTitle, experienceDate, location }) => {
+  const isRo = (language || "en").toLowerCase().startsWith("ro");
+  const subject = isRo
+    ? "Experiența ta a fost anulată"
+    : "Your experience was cancelled";
+  const body = isRo
+    ? `
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Salut ${firstName},</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Experiența „${experienceTitle}”, programată pentru ${experienceDate}, a fost anulată de către host.</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Refundul este în curs de procesare.</p>
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Detalii:</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">– Experiență: ${experienceTitle}<br />– Locație: ${location}</p>
+      <p style="margin:0;font-size:15px;color:#334155;">Îți mulțumim pentru înțelegere.<br />Dacă ai întrebări, ne poți contacta oricând la support@livadai.com.</p>
+    `
+    : `
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Hi ${firstName},</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">The experience “${experienceTitle}”, scheduled for ${experienceDate}, has been cancelled by the host.</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">The refund is being processed.</p>
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Details:</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">– Experience: ${experienceTitle}<br />– Location: ${location}</p>
+      <p style="margin:0;font-size:15px;color:#334155;">Thanks for your understanding.<br />If you have any questions, feel free to contact us at support@livadai.com.</p>
+    `;
+  return { subject, html: body };
+};
+
 const buildRefundCompletedEmail = ({ language, firstName, experienceTitle, amount, currency }) => {
   const isRo = (language || "en").toLowerCase().startsWith("ro");
   const subject = isRo
@@ -405,5 +430,6 @@ module.exports = {
   buildAttendanceReminderEmail,
   buildDisputeOpenedEmail,
   buildRefundInitiatedEmail,
+  buildExperienceCancelledNoticeEmail,
   buildRefundCompletedEmail,
 };
