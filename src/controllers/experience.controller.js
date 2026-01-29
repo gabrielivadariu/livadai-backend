@@ -6,7 +6,7 @@ const { createNotification } = require("./notifications.controller");
 const mongoose = require("mongoose");
 const User = require("../models/user.model");
 const { sendEmail } = require("../utils/mailer");
-const { buildBookingCancelledEmail } = require("../utils/emailTemplates");
+const { buildBookingCancelledEmail, buildRefundInitiatedEmail, formatExperienceDate, formatExperienceLocation } = require("../utils/emailTemplates");
 
 const validateSchedule = (payload) => {
   if (!payload.startsAt) {
@@ -246,6 +246,24 @@ const cancelExperience = async (req, res) => {
     const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
     const exploreUrl = `${appUrl.replace(/\/$/, "")}/experiences`;
 
+    const resolveLanguage = (user) => {
+      const langs = Array.isArray(user?.languages) ? user.languages : [];
+      const normalized = langs.map((l) => String(l).toLowerCase());
+      if (normalized.some((l) => l.startsWith("ro") || l.includes("romanian") || l.includes("română"))) {
+        return "ro";
+      }
+      return "en";
+    };
+
+    const getFirstName = (user) => {
+      const name = user?.displayName || user?.name || "";
+      if (!name) return "there";
+      return name.split(" ")[0] || name;
+    };
+
+    const experienceDate = formatExperienceDate(exp);
+    const experienceLocation = formatExperienceLocation(exp);
+
     // Refund paid bookings and notify explorers
     for (const bk of bookings) {
       if (["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"].includes(bk.status)) {
@@ -267,42 +285,59 @@ const cancelExperience = async (req, res) => {
           bk.refundedAt = new Date();
         }
         await bk.save();
+        if (refunded) {
+          const explorer = bk.explorer;
+          const language = resolveLanguage(explorer);
+          const amountMinor = bk.amount || bk.depositAmount || 0;
+          const amount = (Number(amountMinor) / 100).toFixed(2);
+          const currency = (bk.currency || bk.depositCurrency || "RON").toUpperCase();
+          const firstName = getFirstName(explorer);
+          const emailPayload = buildRefundInitiatedEmail({
+            language,
+            firstName,
+            experienceTitle: exp.title || "LIVADAI",
+            experienceDate,
+            location: experienceLocation,
+            amount,
+            currency,
+          });
+          if (explorer?.email) {
+            try {
+              await sendEmail({
+                to: explorer.email,
+                subject: emailPayload.subject,
+                html: emailPayload.html,
+                type: "booking_cancelled",
+                userId: explorer?._id,
+              });
+            } catch (err) {
+              console.error("Refund initiated email error", err);
+            }
+          }
+
+          try {
+            const notifTitle =
+              language === "ro" ? "Experiență anulată" : "Experience cancelled";
+            const notifMessage =
+              language === "ro"
+                ? `Experiența „${exp.title || "LIVADAI"}” a fost anulată.\nRefund-ul a fost inițiat și va ajunge în contul tău în câteva zile.`
+                : `The experience “${exp.title || "LIVADAI"}” has been cancelled.\nA refund has been initiated and will reach your account in a few days.`;
+            await createNotification({
+              user: explorer?._id,
+              type: "BOOKING_CANCELLED",
+              title: notifTitle,
+              message: notifMessage,
+              data: { activityId: exp._id, bookingId: bk._id, activityTitle: exp.title },
+              push: true,
+            });
+          } catch (err) {
+            console.error("Refund initiated notification error", err);
+          }
+        }
       } else if (!["CANCELLED", "REFUNDED"].includes(bk.status)) {
         bk.status = "CANCELLED";
         bk.cancelledAt = new Date();
         await bk.save();
-      }
-      try {
-        await createNotification({
-          user: bk.explorer,
-          type: "BOOKING_CANCELLED",
-          title: "Booking cancelled",
-          message: `Your booking for "${exp.title}" was cancelled by the host.`,
-          data: { activityId: exp._id, bookingId: bk._id, activityTitle: exp.title },
-        });
-      } catch (err) {
-        console.error("Notify cancel booking error", err);
-      }
-
-      try {
-        const explorer = bk.explorer;
-        if (explorer?.email) {
-          const html = buildBookingCancelledEmail({
-            experience: exp,
-            bookingId: bk._id,
-            ctaUrl: exploreUrl,
-            role: "explorer",
-          });
-          await sendEmail({
-            to: explorer.email,
-            subject: "Experiență anulată",
-            html,
-            type: "booking_cancelled",
-            userId: explorer._id,
-          });
-        }
-      } catch (err) {
-        console.error("Cancel booking email error", err);
       }
     }
 

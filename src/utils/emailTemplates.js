@@ -324,6 +324,43 @@ const buildDisputeOpenedEmail = ({ experience, bookingId }) => {
   });
 };
 
+const buildRefundInitiatedEmail = ({ language, firstName, experienceTitle, experienceDate, location, amount, currency }) => {
+  const isRo = (language || "en").toLowerCase().startsWith("ro");
+  const subject = isRo
+    ? "Experiența ta a fost anulată – refund inițiat"
+    : "Your experience was cancelled – refund initiated";
+  const body = isRo
+    ? `
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Salut ${firstName},</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Din păcate, experiența „${experienceTitle}”, programată pentru ${experienceDate}, a fost anulată de către host.</p>
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Ce se întâmplă acum:</p>
+      <p style="margin:0 0 4px 0;font-size:15px;color:#334155;">– Plata ta a fost anulată</p>
+      <p style="margin:0 0 4px 0;font-size:15px;color:#334155;">– Refund-ul a fost inițiat prin Stripe</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">– Banii vor ajunge în contul tău în 3–10 zile lucrătoare, în funcție de bancă</p>
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Detalii rezervare:</p>
+      <p style="margin:0 0 4px 0;font-size:15px;color:#334155;">– Experiență: ${experienceTitle}</p>
+      <p style="margin:0 0 4px 0;font-size:15px;color:#334155;">– Locație: ${location}</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">– Sumă rambursată: ${amount} ${currency}</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Ne pare rău pentru această situație.<br />Dacă ai întrebări sau ai nevoie de ajutor, ne poți contacta oricând la support@livadai.com.</p>
+      <p style="margin:0;font-size:15px;color:#334155;">Cu grijă,<br />Echipa LIVADAI</p>
+    `
+    : `
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Hi ${firstName},</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Unfortunately, the experience “${experienceTitle}”, scheduled for ${experienceDate}, has been cancelled by the host.</p>
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">What happens next:</p>
+      <p style="margin:0 0 4px 0;font-size:15px;color:#334155;">– Your payment has been cancelled</p>
+      <p style="margin:0 0 4px 0;font-size:15px;color:#334155;">– A refund has been initiated via Stripe</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">– The funds will appear in your account within 3–10 business days, depending on your bank</p>
+      <p style="margin:0 0 6px 0;font-size:15px;color:#334155;">Booking details:</p>
+      <p style="margin:0 0 4px 0;font-size:15px;color:#334155;">– Experience: ${experienceTitle}</p>
+      <p style="margin:0 0 4px 0;font-size:15px;color:#334155;">– Location: ${location}</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">– Refunded amount: ${amount} ${currency}</p>
+      <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">We’re sorry for the inconvenience.<br />If you have any questions or need help, feel free to contact us at support@livadai.com.</p>
+      <p style="margin:0;font-size:15px;color:#334155;">Best regards,<br />The LIVADAI Team</p>
+    `;
+  return { subject, html: body };
+};
+
 module.exports = {
   formatExperienceDate,
   formatExperienceLocation,
@@ -340,4 +377,5 @@ module.exports = {
   buildBookingCancelledEmail,
   buildAttendanceReminderEmail,
   buildDisputeOpenedEmail,
+  buildRefundInitiatedEmail,
 };
