@@ -23,6 +23,10 @@ const validateSchedule = (payload) => {
   if (Number.isNaN(start.getTime())) {
     return "Invalid date format for startsAt";
   }
+  const now = new Date();
+  if (start <= now) {
+    return "startsAt must be in the future / Data trebuie să fie în viitor";
+  }
   let end = payload.endsAt ? new Date(payload.endsAt) : null;
   if (end && Number.isNaN(end.getTime())) {
     return "Invalid date format for endsAt";
