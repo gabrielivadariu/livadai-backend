@@ -99,6 +99,7 @@ const createCheckout = async (req, res) => {
       ? `${appScheme}://payment-success?session_id={CHECKOUT_SESSION_ID}`
       : `${baseUrl.replace(/\/$/, "")}/payment-success?session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${baseUrl.replace(/\/$/, "")}/payment-cancel`;
+    const platformFeeMinor = isServiceFee ? 0 : Math.round(amount * 0.1);
     const paymentIntentData = {
       metadata: {
         bookingId: booking._id.toString(),
@@ -110,6 +111,7 @@ const createCheckout = async (req, res) => {
     };
     if (!isServiceFee) {
       paymentIntentData.transfer_data = { destination: host.stripeAccountId };
+      paymentIntentData.application_fee_amount = platformFeeMinor;
     }
 
     const session = await stripe.checkout.sessions.create({
@@ -148,8 +150,9 @@ const createCheckout = async (req, res) => {
         stripePaymentIntentId: session.payment_intent,
         stripeSessionId: session.id,
         amount,
+        totalAmount: amount,
         currency: isServiceFee ? depositCurrency : baseCurrency,
-        platformFee: 0,
+        platformFee: platformFeeMinor,
         paymentType: isServiceFee ? "SERVICE_FEE" : "PAID_BOOKING",
         status: "INITIATED",
       },

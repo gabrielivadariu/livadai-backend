@@ -14,6 +14,7 @@ const paymentSchema = new mongoose.Schema(
     stripeSessionId: { type: String },
     stripeChargeId: { type: String },
     amount: { type: Number },
+    totalAmount: { type: Number },
     currency: { type: String, default: "ron" },
     livadaiFee: { type: Number },
     hostShare: { type: Number },
