@@ -18,7 +18,7 @@ const paymentSchema = new mongoose.Schema(
     livadaiFee: { type: Number },
     hostShare: { type: Number },
     platformFee: { type: Number },
-    paymentType: { type: String, enum: ["PAID_BOOKING", "DEPOSIT"], default: "PAID_BOOKING" },
+    paymentType: { type: String, enum: ["PAID_BOOKING", "DEPOSIT", "SERVICE_FEE"], default: "PAID_BOOKING" },
     status: {
       type: String,
       enum: ["INITIATED", "CONFIRMED", "FAILED", "REFUNDED", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"],

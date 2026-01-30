@@ -26,20 +26,23 @@ const createCheckout = async (req, res) => {
     // host banned?
     const host = await User.findById(exp.host);
     if (host?.isBanned) return res.status(403).json({ message: "Host banned / experience disabled" });
-    if (!host?.stripeAccountId || !host?.isStripeChargesEnabled) {
-      if (host?.stripeAccountId) {
-        try {
-          const acct = await stripe.accounts.retrieve(host.stripeAccountId);
-          host.isStripeChargesEnabled = !!acct?.charges_enabled;
-          host.isStripePayoutsEnabled = !!acct?.payouts_enabled;
-          host.isStripeDetailsSubmitted = !!acct?.details_submitted;
-          await host.save();
-        } catch (err) {
-          console.error("Stripe account refresh failed", err?.message || err);
-        }
-      }
+    const isFree = !exp.price || Number(exp.price) <= 0;
+    if (!isFree) {
       if (!host?.stripeAccountId || !host?.isStripeChargesEnabled) {
-        return res.status(400).json({ message: "Host payout account not ready" });
+        if (host?.stripeAccountId) {
+          try {
+            const acct = await stripe.accounts.retrieve(host.stripeAccountId);
+            host.isStripeChargesEnabled = !!acct?.charges_enabled;
+            host.isStripePayoutsEnabled = !!acct?.payouts_enabled;
+            host.isStripeDetailsSubmitted = !!acct?.details_submitted;
+            await host.save();
+          } catch (err) {
+            console.error("Stripe account refresh failed", err?.message || err);
+          }
+        }
+        if (!host?.stripeAccountId || !host?.isStripeChargesEnabled) {
+          return res.status(400).json({ message: "Host payout account not ready" });
+        }
       }
     }
     const now = new Date();
@@ -59,7 +62,7 @@ const createCheckout = async (req, res) => {
 
     // Anti-abuse: block free bookings if too many no-shows in last 30 days
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const isFree = !exp.price || Number(exp.price) <= 0;
+    const isServiceFee = isFree;
     if (isFree) {
       const noShows = await Booking.countDocuments({
         explorer: req.user.id,
@@ -73,8 +76,8 @@ const createCheckout = async (req, res) => {
 
     const baseCurrency = "ron";
     const depositCurrency = "ron";
-    const depositAmountMinor = 5 * 100;
-    const unitAmount = isFree ? depositAmountMinor : Math.round((exp.price || 0) * 100);
+    const serviceFeeAmountMinor = 1 * 100;
+    const unitAmount = isServiceFee ? serviceFeeAmountMinor : Math.round((exp.price || 0) * 100);
     const amount = unitAmount * qty;
     if (amount <= 0) return res.status(400).json({ message: "Invalid price" });
 
@@ -83,10 +86,10 @@ const createCheckout = async (req, res) => {
       explorer: req.user.id,
       host: exp.host,
       quantity: qty,
-      amount: isFree ? 0 : amount,
+      amount: amount,
       currency: baseCurrency,
-      depositAmount: isFree ? amount : 0,
-      depositCurrency: isFree ? depositCurrency : undefined,
+      depositAmount: 0,
+      depositCurrency: undefined,
       status: "PENDING",
     });
 
@@ -96,23 +99,28 @@ const createCheckout = async (req, res) => {
       ? `${appScheme}://payment-success?session_id={CHECKOUT_SESSION_ID}`
       : `${baseUrl.replace(/\/$/, "")}/payment-success?session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${baseUrl.replace(/\/$/, "")}/payment-cancel`;
+    const paymentIntentData = {
+      metadata: {
+        bookingId: booking._id.toString(),
+        experienceId: exp._id.toString(),
+        explorerId: (req.user?._id || req.user?.id)?.toString(),
+        hostId: exp.host?.toString?.() || exp.host?.toString?.(),
+        isServiceFee: isServiceFee ? "true" : "false",
+      },
+    };
+    if (!isServiceFee) {
+      paymentIntentData.transfer_data = { destination: host.stripeAccountId };
+    }
+
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: ["card"],
-      payment_intent_data: {
-        transfer_data: { destination: host.stripeAccountId },
-        metadata: {
-          bookingId: booking._id.toString(),
-          experienceId: exp._id.toString(),
-          explorerId: (req.user?._id || req.user?.id)?.toString(),
-          hostId: exp.host?.toString?.() || exp.host?.toString?.(),
-        },
-      },
+      payment_intent_data: paymentIntentData,
       line_items: [
         {
           price_data: {
-            currency: isFree ? depositCurrency : baseCurrency,
-            product_data: { name: isFree ? `Deposit for ${exp.title || "Experience"}` : exp.title || "Experience" },
+            currency: isServiceFee ? depositCurrency : baseCurrency,
+            product_data: { name: isServiceFee ? `Service fee for ${exp.title || "Experience"}` : exp.title || "Experience" },
             unit_amount: unitAmount,
           },
           quantity: qty,
@@ -125,7 +133,8 @@ const createCheckout = async (req, res) => {
         experienceId: exp._id.toString(),
         explorerId: (req.user?._id || req.user?.id)?.toString(),
         quantity: qty.toString(),
-        isDeposit: isFree ? "true" : "false",
+        isDeposit: "false",
+        isServiceFee: isServiceFee ? "true" : "false",
       },
     });
 
@@ -139,9 +148,9 @@ const createCheckout = async (req, res) => {
         stripePaymentIntentId: session.payment_intent,
         stripeSessionId: session.id,
         amount,
-        currency: isFree ? depositCurrency : baseCurrency,
+        currency: isServiceFee ? depositCurrency : baseCurrency,
         platformFee: 0,
-        paymentType: isFree ? "DEPOSIT" : "PAID_BOOKING",
+        paymentType: isServiceFee ? "SERVICE_FEE" : "PAID_BOOKING",
         status: "INITIATED",
       },
       { upsert: true, new: true }
