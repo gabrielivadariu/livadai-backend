@@ -25,7 +25,7 @@ const getHostProfile = async (req, res) => {
     let { id } = req.params;
     if (id === "me" && req.user?.id) id = req.user.id;
     const user = await User.findById(id).select(
-      "name role city country languages about_me display_name age avatar phone rating_avg rating_count total_participants total_events experience"
+      "name displayName display_name role city country languages about_me age avatar phone rating_avg rating_count total_participants total_events experience"
     );
     if (!user || user.role !== "HOST") return res.status(404).json({ message: "Host not found" });
     const viewerId = req.user?.id;
@@ -49,10 +49,12 @@ const getHostProfile = async (req, res) => {
     const stats = await computeHostStats(id);
 
     // Basic fallback values
+    const displayName = user.displayName || user.display_name || user.name;
     return res.json({
       id: user._id,
-      display_name: user.display_name || user.name,
       name: user.name,
+      displayName: displayName || user.name,
+      display_name: displayName || user.name,
       age: user.age || null,
       city: user.city || "",
       country: user.country || "",
@@ -84,12 +86,15 @@ const getHostProfile = async (req, res) => {
 const getMyHostProfile = async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select(
-      "name display_name city country languages about_me age avatar phone role rating_avg rating_count total_participants total_events experience"
+      "name displayName display_name city country languages about_me age avatar phone role rating_avg rating_count total_participants total_events experience"
     );
     if (!user || user.role !== "HOST") return res.status(404).json({ message: "Host not found" });
     const stats = await computeHostStats(req.user.id);
+    const displayName = user.displayName || user.display_name || user.name;
     return res.json({
       ...user.toObject(),
+      displayName: displayName || user.name,
+      display_name: displayName || user.name,
       total_participants: stats.totalParticipants ?? user.total_participants ?? 0,
       total_events: stats.totalEvents ?? user.total_events ?? 0,
     });
@@ -156,6 +161,7 @@ const updateMyProfile = async (req, res) => {
   try {
     const allowed = [
       "display_name",
+      "displayName",
       "name",
       "city",
       "country",
@@ -191,6 +197,9 @@ const updateMyProfile = async (req, res) => {
       update.experienceDescription = update.experience;
     }
     const userUpdate = {};
+    if (update.displayName !== undefined) {
+      update.display_name = update.displayName;
+    }
     if (update.display_name !== undefined) {
       userUpdate.displayName = update.display_name;
       userUpdate.display_name = update.display_name;
@@ -216,10 +225,15 @@ const updateMyProfile = async (req, res) => {
     }
 
     const user = await User.findByIdAndUpdate(req.user.id, update, { new: true }).select(
-      "name display_name city country languages about_me age avatar phone experience"
+      "name displayName display_name city country languages about_me age avatar phone experience"
     );
     if (!user) return res.status(404).json({ message: "User not found" });
-    return res.json(user);
+    const displayName = user.displayName || user.display_name || user.name;
+    return res.json({
+      ...user.toObject(),
+      displayName: displayName || user.name,
+      display_name: displayName || user.name,
+    });
   } catch (err) {
     console.error("updateMyProfile error", err);
     return res.status(500).json({ message: "Server error" });

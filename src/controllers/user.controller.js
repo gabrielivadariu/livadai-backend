@@ -31,8 +31,8 @@ const buildHistory = async (userId) => {
 
   const getMeProfile = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select(
-      "name displayName avatar age languages shortBio profilePhoto phoneVerified phone isTrustedParticipant city country"
+  const user = await User.findById(req.user.id).select(
+      "name displayName display_name avatar age languages shortBio profilePhoto phoneVerified phone isTrustedParticipant city country"
     );
     if (!user) return res.status(404).json({ message: "User not found" });
 
@@ -42,7 +42,7 @@ const buildHistory = async (userId) => {
     const avatar = user.avatar || user.profilePhoto || "";
     const displayName = user.displayName || user.display_name || user.name;
     return res.json({
-      name: displayName || user.name,
+      name: user.name,
       displayName: displayName || user.name,
       avatar,
       profilePhoto: avatar,
@@ -113,8 +113,8 @@ const buildHistory = async (userId) => {
   const getPublicProfile = async (req, res) => {
   try {
     const userId = req.params.id;
-    const user = await User.findById(userId).select(
-      "name displayName avatar age languages shortBio profilePhoto phoneVerified isTrustedParticipant city country"
+  const user = await User.findById(userId).select(
+      "name displayName display_name avatar age languages shortBio profilePhoto phoneVerified isTrustedParticipant city country"
     );
     if (!user) return res.status(404).json({ message: "User not found" });
 
@@ -124,7 +124,7 @@ const buildHistory = async (userId) => {
     const avatar = user.avatar || user.profilePhoto || "";
     const displayName = user.displayName || user.display_name || user.name;
     return res.json({
-      name: displayName || user.name,
+      name: user.name,
       displayName: displayName || user.name,
       avatar,
       profilePhoto: avatar,

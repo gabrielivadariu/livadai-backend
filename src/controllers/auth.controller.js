@@ -157,6 +157,7 @@ const register = async (req, res) => {
       user: {
         _id: user._id,
         name: user.name,
+        displayName: user.displayName || user.display_name || user.name,
         email: user.email,
         role: user.role,
       },
@@ -416,7 +417,17 @@ const verifyEmail = async (req, res) => {
     await user.save();
 
     const token = signToken(user);
-    return res.json({ message: "Email verified", token, user: { _id: user._id, name: user.name, email: user.email, role: user.role } });
+    return res.json({
+      message: "Email verified",
+      token,
+      user: {
+        _id: user._id,
+        name: user.name,
+        displayName: user.displayName || user.display_name || user.name,
+        email: user.email,
+        role: user.role,
+      },
+    });
   } catch (err) {
     console.error("Verify email error", err);
     return res.status(500).json({ message: "Server error" });
@@ -425,6 +436,8 @@ const verifyEmail = async (req, res) => {
 
 const buildAuthUser = (user) => ({
   _id: user._id,
+  name: user.name,
+  displayName: user.displayName || user.display_name || user.name,
   email: user.email,
   role: user.role,
   avatar: user.avatar || user.profilePhoto || "",

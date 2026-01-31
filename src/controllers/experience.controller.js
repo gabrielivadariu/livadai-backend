@@ -439,6 +439,23 @@ const listExperiences = async (req, res) => {
     }
     const exps = await Experience.find(filters);
 
+    const hostIds = Array.from(
+      new Set(
+        exps
+          .map((e) => e.host)
+          .filter(Boolean)
+          .map((id) => id.toString())
+      )
+    );
+    const hosts = hostIds.length
+      ? await User.find({ _id: { $in: hostIds } }).select("name displayName display_name").lean()
+      : [];
+    const hostMap = hosts.reduce((acc, h) => {
+      const displayName = h.displayName || h.display_name || h.name || "";
+      acc[h._id.toString()] = displayName;
+      return acc;
+    }, {});
+
     // Compute booked spots for these experiences
     const ids = exps.map((e) => e._id);
     const bookedAgg = await Booking.aggregate([
@@ -454,7 +471,8 @@ const listExperiences = async (req, res) => {
       const total = e.maxParticipants || 1;
       const booked = bookedMap[e._id.toString()] || 0;
       const availableSpots = Math.max(0, total - booked);
-      return { ...e.toObject(), bookedSpots: booked, availableSpots };
+      const hostDisplayName = hostMap[e.host?.toString?.() || ""] || "";
+      return { ...e.toObject(), bookedSpots: booked, availableSpots, hostDisplayName };
     });
 
     return res.json(mapped);
