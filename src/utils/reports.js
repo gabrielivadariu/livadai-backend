@@ -51,7 +51,6 @@ const sendContentReportEmail = async ({ experience, reporter, reason, comment, r
     }
   }
 
-  const subject = `[LIVADAI] Booking dispute: ${experience?.title || "experience"} (#${booking?._id || "n/a"})`;
   const html = `
     <h3>Content report</h3>
     <p><strong>Experience:</strong> ${experience?.title || ""} (${experience?._id})</p>
@@ -93,6 +92,7 @@ const sendDisputeEmail = async ({ booking, experience, host, explorer, reason, c
     console.warn("[REPORT_DISPUTE] REPORTS_EMAIL missing; skipping email");
     return;
   }
+  const subject = `[LIVADAI] Booking dispute: ${experience?.title || "experience"} (#${booking?._id || "n/a"})`;
   const escapeHtml = (value) => {
     if (value === null || value === undefined) return "";
     return String(value)
