@@ -1,11 +1,46 @@
+const mongoose = require("mongoose");
 const Notification = require("../models/notification.model");
 const { sendPushNotification } = require("./push.controller");
+
+const CHAT_PUSH_THROTTLE_MS = 5 * 60 * 1000;
+
+const normalizeId = (value) => {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  if (value._id) return value._id.toString();
+  if (value.id) return value.id.toString();
+  return value.toString ? value.toString() : null;
+};
+
+const shouldThrottleChatPush = async ({ user, data }) => {
+  const bookingId = normalizeId(data?.bookingId);
+  if (!bookingId) return false;
+  const since = new Date(Date.now() - CHAT_PUSH_THROTTLE_MS);
+  const orClauses = [{ "data.bookingId": bookingId }];
+  if (mongoose.Types.ObjectId.isValid(bookingId)) {
+    orClauses.push({ "data.bookingId": new mongoose.Types.ObjectId(bookingId) });
+  }
+  const recent = await Notification.findOne({
+    user,
+    type: "MESSAGE_NEW",
+    createdAt: { $gte: since },
+    $or: orClauses,
+  })
+    .select("_id")
+    .lean();
+  return !!recent;
+};
 
 const createNotification = async ({ user, type, title, message, data = {}, push = true }) => {
   if (!user || !type || !title || !message) return null;
   try {
     const notif = await Notification.create({ user, type, title, message, data });
-    if (push) {
+    let shouldPush = !!push;
+    if (shouldPush && type === "MESSAGE_NEW") {
+      const throttled = await shouldThrottleChatPush({ user, data });
+      if (throttled) shouldPush = false;
+    }
+    if (shouldPush) {
       sendPushNotification({
         userId: user,
         title,
