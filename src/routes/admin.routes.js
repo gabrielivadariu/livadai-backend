@@ -134,7 +134,7 @@ const applyDisableExperience = async (experienceId) => {
         });
         await sendEmail({
           to: b.explorer.email,
-          subject: "Experiență anulată",
+          subject: `Experiență anulată: ${exp?.title || "LIVADAI"} (#${b._id})`,
           html,
           type: "booking_cancelled",
           userId: b.explorer._id,
@@ -153,7 +153,7 @@ const applyDisableExperience = async (experienceId) => {
       });
       await sendEmail({
         to: hostUser.email,
-        subject: "Experiență anulată",
+        subject: `Experiență anulată: ${exp?.title || "LIVADAI"} (host)`,
         html,
         type: "booking_cancelled",
         userId: hostUser._id,

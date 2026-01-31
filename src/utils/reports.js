@@ -29,7 +29,7 @@ const sendContentReportEmail = async ({ experience, reporter, reason, comment, r
   }
   const host = experience?.host || {};
   const reporterUser = reporter || {};
-  const subject = `[LIVADAI] Content report for "${experience?.title || "experience"}"`;
+  const subject = `[LIVADAI] Content report: ${experience?.title || "experience"} (${reportId || "n/a"})`;
   const disableLink = buildActionLink({ action: "DISABLE_EXPERIENCE", experienceId: experience?._id, hostId: host?._id, reportId });
   const banHostLink = buildActionLink({ action: "BAN_HOST", hostId: host?._id, reportId });
   const banExplorerLink = reporterUser?._id ? buildActionLink({ action: "BAN_EXPLORER", explorerId: reporterUser._id, reportId }) : null;
@@ -51,6 +51,7 @@ const sendContentReportEmail = async ({ experience, reporter, reason, comment, r
     }
   }
 
+  const subject = `[LIVADAI] Booking dispute: ${experience?.title || "experience"} (#${booking?._id || "n/a"})`;
   const html = `
     <h3>Content report</h3>
     <p><strong>Experience:</strong> ${experience?.title || ""} (${experience?._id})</p>
@@ -234,9 +235,10 @@ const sendUserReportEmail = async ({ targetUser, reporter, reason, comment, repo
     ${previewLink ? `<p><a href="${previewLink}">Preview report details</a></p>` : ""}
   `;
   console.log("[REPORT_USER] sending email to", reportsEmail);
+  const subject = `[LIVADAI] User report: ${targetUser?.name || targetUser?._id} (${reportId || "n/a"})`;
   await sendEmail({
     to: reportsEmail,
-    subject: `[LIVADAI] User report: ${targetUser?.name || targetUser?._id}`,
+    subject,
     html,
     type: "report",
   });
