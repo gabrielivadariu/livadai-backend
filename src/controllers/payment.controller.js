@@ -5,7 +5,7 @@ const Experience = require("../models/experience.model");
 const Payment = require("../models/payment.model");
 const { createNotification } = require("./notifications.controller");
 const { sendEmail } = require("../utils/mailer");
-const { buildBookingConfirmedEmail } = require("../utils/emailTemplates");
+const { buildBookingConfirmedEmail, formatExperienceDate } = require("../utils/emailTemplates");
 const User = require("../models/user.model");
 
 // New checkout flow: experienceId + quantity
@@ -250,6 +250,7 @@ const handlePaymentSuccess = async ({ bookingId, paymentIntentId, sessionId, isD
     if (explorer?.email) {
       const totalSeats = exp.maxParticipants || 1;
       const remainingSeats = typeof exp.remainingSpots === "number" ? exp.remainingSpots : Math.max(0, totalSeats - (booking.quantity || 1));
+      const dateLabel = formatExperienceDate(exp);
       const html = buildBookingConfirmedEmail({
         experience: exp,
         bookingId: booking._id,
@@ -261,7 +262,7 @@ const handlePaymentSuccess = async ({ bookingId, paymentIntentId, sessionId, isD
       });
       await sendEmail({
         to: explorer.email,
-        subject: "Booking confirmat / Booking confirmed – LIVADAI",
+        subject: `Booking confirmat: ${exp?.title || "LIVADAI"} – ${dateLabel} (#${booking._id})`,
         html,
         type: "booking_explorer",
         userId: explorer._id,
@@ -271,6 +272,7 @@ const handlePaymentSuccess = async ({ bookingId, paymentIntentId, sessionId, isD
     if (host?.email) {
       const totalSeats = exp.maxParticipants || 1;
       const remainingSeats = typeof exp.remainingSpots === "number" ? exp.remainingSpots : Math.max(0, totalSeats - (booking.quantity || 1));
+      const dateLabel = formatExperienceDate(exp);
       const html = buildBookingConfirmedEmail({
         experience: exp,
         bookingId: booking._id,
@@ -282,7 +284,7 @@ const handlePaymentSuccess = async ({ bookingId, paymentIntentId, sessionId, isD
       });
       await sendEmail({
         to: host.email,
-        subject: "Rezervare confirmată / Booking confirmed – LIVADAI",
+        subject: `Rezervare confirmată: ${exp?.title || "LIVADAI"} – ${dateLabel} (#${booking._id})`,
         html,
         type: "booking_host",
         userId: host._id,

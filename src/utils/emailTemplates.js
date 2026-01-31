@@ -327,8 +327,8 @@ const buildDisputeOpenedEmail = ({ experience, bookingId }) => {
 const buildRefundInitiatedEmail = ({ language, firstName, experienceTitle, experienceDate, location, amount, currency }) => {
   const isRo = (language || "en").toLowerCase().startsWith("ro");
   const subject = isRo
-    ? "Experiența ta a fost anulată – refund inițiat"
-    : "Your experience was cancelled – refund initiated";
+    ? `Experiența ta a fost anulată – refund inițiat: ${experienceTitle}`
+    : `Your experience was cancelled – refund initiated: ${experienceTitle}`;
   const body = isRo
     ? `
       <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Salut ${firstName},</p>
@@ -364,8 +364,8 @@ const buildRefundInitiatedEmail = ({ language, firstName, experienceTitle, exper
 const buildExperienceCancelledNoticeEmail = ({ language, firstName, experienceTitle, experienceDate, location }) => {
   const isRo = (language || "en").toLowerCase().startsWith("ro");
   const subject = isRo
-    ? "Experiența ta a fost anulată"
-    : "Your experience was cancelled";
+    ? `Experiența ta a fost anulată: ${experienceTitle}`
+    : `Your experience was cancelled: ${experienceTitle}`;
   const body = isRo
     ? `
       <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Salut ${firstName},</p>
@@ -389,8 +389,8 @@ const buildExperienceCancelledNoticeEmail = ({ language, firstName, experienceTi
 const buildRefundCompletedEmail = ({ language, firstName, experienceTitle, amount, currency }) => {
   const isRo = (language || "en").toLowerCase().startsWith("ro");
   const subject = isRo
-    ? "Refund finalizat pentru experiența ta"
-    : "Your refund has been completed";
+    ? `Refund finalizat: ${experienceTitle}`
+    : `Your refund has been completed: ${experienceTitle}`;
   const body = isRo
     ? `
       <p style="margin:0 0 10px 0;font-size:15px;color:#334155;">Salut ${firstName},</p>

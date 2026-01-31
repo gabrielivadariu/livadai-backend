@@ -3,7 +3,7 @@ const Booking = require("../models/booking.model");
 const User = require("../models/user.model");
 const { createNotification } = require("../controllers/notifications.controller");
 const { sendEmail } = require("../utils/mailer");
-const { buildBookingReminderEmail } = require("../utils/emailTemplates");
+const { buildBookingReminderEmail, formatExperienceDate } = require("../utils/emailTemplates");
 
 // Runs every 15 minutes to send reminder notifications 24h before start
 const setupReminderJob = () => {
@@ -33,13 +33,14 @@ const setupReminderJob = () => {
           try {
             const hostUser = await User.findById(exp.host).select("email name displayName");
             if (hostUser?.email) {
+              const dateLabel = formatExperienceDate(exp);
               const html = buildBookingReminderEmail({
                 experience: exp,
                 ctaUrl: hostBookingsUrl,
               });
               await sendEmail({
                 to: hostUser.email,
-                subject: "Reminder / Reminder – LIVADAI",
+                subject: `Reminder: ${exp?.title || "LIVADAI"} – ${dateLabel}`,
                 html,
                 type: "booking_reminder",
                 userId: hostUser._id,
@@ -67,6 +68,7 @@ const setupReminderJob = () => {
           try {
             const explorer = bk.explorer;
             if (explorer?.email) {
+              const dateLabel = formatExperienceDate(exp);
               const html = buildBookingReminderEmail({
                 experience: exp,
                 bookingId: bk._id,
@@ -74,7 +76,7 @@ const setupReminderJob = () => {
               });
               await sendEmail({
                 to: explorer.email,
-                subject: "Reminder / Reminder – LIVADAI",
+                subject: `Reminder: ${exp?.title || "LIVADAI"} – ${dateLabel} (#${bk._id})`,
                 html,
                 type: "booking_reminder",
                 userId: explorer._id,

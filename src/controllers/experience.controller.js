@@ -404,7 +404,7 @@ const cancelExperience = async (req, res) => {
         });
         await sendEmail({
           to: hostUser.email,
-          subject: "Experiență anulată",
+          subject: `Experiență anulată: ${exp?.title || "LIVADAI"} – ${experienceDate}`,
           html,
           type: "booking_cancelled",
           userId: hostUser._id,

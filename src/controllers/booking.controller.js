@@ -8,7 +8,7 @@ const Payment = require("../models/payment.model");
 const stripe = require("../config/stripe");
 const jwt = require("jsonwebtoken");
 const { sendEmail } = require("../utils/mailer");
-const { buildDisputeOpenedEmail, buildBookingCancelledEmail } = require("../utils/emailTemplates");
+const { buildDisputeOpenedEmail, buildBookingCancelledEmail, formatExperienceDate } = require("../utils/emailTemplates");
 const { isPayoutEligible, logPayoutAttempt } = require("../utils/payout");
 const { sendContentReportEmail, sendDisputeEmail, sendUserReportEmail } = require("../utils/reports");
 const { recalcTrustedParticipant } = require("../utils/trust");
@@ -233,6 +233,7 @@ const cancelBookingByHost = async (req, res) => {
       if (explorer?.email && exp) {
         const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
         const exploreUrl = `${appUrl.replace(/\/$/, "")}/my-activities`;
+        const dateLabel = formatExperienceDate(exp);
         const html = buildBookingCancelledEmail({
           experience: exp,
           bookingId: booking._id,
@@ -241,7 +242,7 @@ const cancelBookingByHost = async (req, res) => {
         });
         await sendEmail({
           to: explorer.email,
-          subject: "Rezervare anulată / Booking cancelled – LIVADAI",
+          subject: `Rezervare anulată: ${exp?.title || "LIVADAI"} – ${dateLabel} (#${booking._id})`,
           html,
           type: "booking_cancelled",
           userId: explorer._id,
@@ -492,13 +493,14 @@ const disputeBooking = async (req, res) => {
       const hostUser = await User.findById(booking.host).select("email");
       const experience = await Experience.findById(booking.experience);
       if (hostUser?.email) {
+        const dateLabel = formatExperienceDate(experience);
         const html = buildDisputeOpenedEmail({
           experience,
           bookingId: booking._id,
         });
         await sendEmail({
           to: hostUser.email,
-          subject: "Dispută deschisă / Dispute opened – LIVADAI",
+          subject: `Dispută deschisă: ${experience?.title || "LIVADAI"} – ${dateLabel} (#${booking._id})`,
           html,
           type: "official",
           userId: hostUser._id,

@@ -2,7 +2,7 @@ const Booking = require("../models/booking.model");
 const Experience = require("../models/experience.model");
 const { createNotification } = require("../controllers/notifications.controller");
 const { sendEmail } = require("../utils/mailer");
-const { buildAttendanceReminderEmail } = require("../utils/emailTemplates");
+const { buildAttendanceReminderEmail, formatExperienceDate } = require("../utils/emailTemplates");
 const User = require("../models/user.model");
 
 const setupAttendanceJob = () => {
@@ -77,6 +77,7 @@ const setupAttendanceJob = () => {
                 if (hostUser?.email) {
                   const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
                   const hostBookingsUrl = `${appUrl.replace(/\/$/, "")}/host/bookings`;
+                  const dateLabel = formatExperienceDate(bk.experience);
                   const html = buildAttendanceReminderEmail({
                     experience: bk.experience,
                     bookingId: bk._id,
@@ -84,7 +85,7 @@ const setupAttendanceJob = () => {
                   });
                   await sendEmail({
                     to: hostUser.email,
-                    subject: "Confirmă prezența / Confirm attendance – LIVADAI",
+                    subject: `Confirmă prezența: ${bk.experience?.title || "LIVADAI"} – ${dateLabel} (#${bk._id})`,
                     html,
                     type: "official",
                     userId: hostUser._id,
