@@ -1,5 +1,6 @@
 const Booking = require("../models/booking.model");
 const Message = require("../models/message.model");
+const Payment = require("../models/payment.model");
 const Experience = require("../models/experience.model");
 const User = require("../models/user.model");
 const { createNotification } = require("./notifications.controller");
@@ -38,10 +39,19 @@ const isChatArchived = (booking) => {
   return !Number.isNaN(archivedAt.getTime()) && archivedAt <= new Date();
 };
 
-const ensureChatAllowed = (booking, isAdmin = false) => {
+const ensureChatAllowed = async (booking, isAdmin = false) => {
   if (!booking) return false;
   if (!isAdmin && isChatArchived(booking)) return false;
-  return CHAT_STATUSES.has(booking.status);
+  if (CHAT_STATUSES.has(booking.status)) return true;
+  if (booking.status === "PENDING") {
+    try {
+      const confirmed = await Payment.findOne({ booking: booking._id, status: "CONFIRMED" }).select("_id");
+      return !!confirmed;
+    } catch (_e) {
+      return false;
+    }
+  }
+  return false;
 };
 
 const maskContactInfo = (text) => {
@@ -63,7 +73,7 @@ const listMessages = async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    if (!ensureChatAllowed(booking, isAdmin)) {
+    if (!(await ensureChatAllowed(booking, isAdmin))) {
       return res
         .status(403)
         .json({ message: isChatArchived(booking) ? "Chat archived." : "Chat is available only after payment." });
@@ -109,7 +119,7 @@ const sendMessage = async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    if (!ensureChatAllowed(booking, isAdmin)) {
+    if (!(await ensureChatAllowed(booking, isAdmin))) {
       return res
         .status(403)
         .json({ message: isChatArchived(booking) ? "Chat archived." : "Chat is available only after payment." });

@@ -14,6 +14,7 @@ const {
 } = require("../controllers/booking.controller");
 const { authenticate, authorize } = require("../middleware/auth.middleware");
 const Booking = require("../models/booking.model");
+const Payment = require("../models/payment.model");
 
 const router = Router();
 
@@ -28,7 +29,7 @@ router.post("/:id/cancel-by-host", authenticate, authorize(["HOST", "BOTH"]), ca
 router.post("/:id/dispute", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), disputeBooking);
 router.post("/report-content", authenticate, reportContent);
 router.post("/report-user", authenticate, reportUser);
-router.get("/:id", authenticate, async (req, res) => {
+  router.get("/:id", authenticate, async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id)
       .populate("experience", "title startsAt endsAt startDate endDate activityType maxParticipants remainingSpots")
@@ -64,6 +65,12 @@ router.get("/:id", authenticate, async (req, res) => {
       delete obj.explorer.phone;
     }
     obj.canViewClientPhone = canViewClientPhone;
+    try {
+      const confirmed = await Payment.findOne({ booking: booking._id, status: "CONFIRMED" }).select("_id");
+      obj.paymentConfirmed = !!confirmed;
+    } catch (_e) {
+      obj.paymentConfirmed = false;
+    }
     return res.json(obj);
   } catch (err) {
     console.error("Get booking error", err);
