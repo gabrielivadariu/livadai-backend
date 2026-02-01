@@ -296,9 +296,9 @@ const addHostReview = async (req, res) => {
     if (!endDate || Number.isNaN(endDate.getTime())) {
       return res.status(400).json({ message: "Experience end date missing." });
     }
-    const reviewOpenAt = new Date(endDate.getTime() + 48 * 60 * 60 * 1000);
-    if (new Date() <= reviewOpenAt) {
-      return res.status(400).json({ message: "Reviews are available 48h after the experience ends." });
+    const now = new Date();
+    if (now <= endDate) {
+      return res.status(400).json({ message: "Reviews are available after the experience ends." });
     }
 
     const review = await Review.create({

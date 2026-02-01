@@ -123,11 +123,11 @@ const getMyBookings = async (req, res) => {
     const data = bookings.map((b) => {
       const exp = b.experience;
       const endDate = getExperienceEndDate(exp);
-      const eligible =
+    const eligible =
         b.status === "COMPLETED" &&
         endDate &&
         !Number.isNaN(endDate.getTime()) &&
-        now > new Date(endDate.getTime() + 48 * 60 * 60 * 1000);
+        now > endDate;
       const reviewKey = `${b._id.toString()}::${req.user.id}`;
       return {
         ...b.toObject(),
