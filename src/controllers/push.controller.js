@@ -21,7 +21,14 @@ const sendPushNotification = async ({ userId, title, body, data = {} }) => {
   try {
     const user = await User.findById(userId).select("expoPushToken");
     const token = user?.expoPushToken;
-    if (!token || !token.startsWith("ExponentPushToken")) return;
+    if (!token) {
+      console.debug("push skipped: missing token", { userId });
+      return;
+    }
+    if (!token.startsWith("ExponentPushToken")) {
+      console.debug("push skipped: invalid token", { userId, tokenPrefix: token.slice(0, 20) });
+      return;
+    }
 
     await fetch(EXPO_PUSH_URL, {
       method: "POST",
