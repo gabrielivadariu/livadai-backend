@@ -66,8 +66,15 @@ router.post("/report-user", authenticate, reportUser);
     }
     obj.canViewClientPhone = canViewClientPhone;
     try {
-      const confirmed = await Payment.findOne({ booking: booking._id, status: "CONFIRMED" }).select("_id");
+      const confirmed = await Payment.findOne({ booking: booking._id, status: "CONFIRMED" }).select("paymentType");
       obj.paymentConfirmed = !!confirmed;
+      if (confirmed && booking.status === "PENDING") {
+        const nextStatus = confirmed.paymentType === "DEPOSIT" ? "DEPOSIT_PAID" : "PAID";
+        obj.status = nextStatus;
+        try {
+          await Booking.updateOne({ _id: booking._id, status: "PENDING" }, { $set: { status: nextStatus } });
+        } catch (_e) {}
+      }
     } catch (_e) {
       obj.paymentConfirmed = false;
     }

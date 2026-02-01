@@ -117,24 +117,60 @@ const getMyBookings = async (req, res) => {
       )
       .populate("host", "name");
     const bookingIds = bookings.map((b) => b._id);
+    let confirmedPayments = [];
+    if (bookingIds.length) {
+      try {
+        confirmedPayments = await Payment.find({ booking: { $in: bookingIds }, status: "CONFIRMED" }).select("booking paymentType");
+      } catch (_e) {
+        confirmedPayments = [];
+      }
+    }
+    const paymentMap = new Map();
+    confirmedPayments.forEach((p) => {
+      const id = p.booking?.toString?.() || p.booking;
+      if (id) paymentMap.set(id, p.paymentType || "PAID_BOOKING");
+    });
+    const pendingUpdates = [];
     const existingReviews = await Review.find({ booking: { $in: bookingIds } }).select("booking user");
     const reviewedMap = new Set(existingReviews.map((r) => `${r.booking.toString()}::${r.user.toString()}`));
     const now = new Date();
     const data = bookings.map((b) => {
       const exp = b.experience;
       const endDate = getExperienceEndDate(exp);
-    const eligible =
-        b.status === "COMPLETED" &&
+      const payType = paymentMap.get(b._id.toString());
+      let effectiveStatus = b.status;
+      if (payType && b.status === "PENDING") {
+        effectiveStatus = payType === "DEPOSIT" ? "DEPOSIT_PAID" : "PAID";
+        pendingUpdates.push({ bookingId: b._id, status: effectiveStatus });
+      }
+      const eligible =
+        effectiveStatus === "COMPLETED" &&
         endDate &&
         !Number.isNaN(endDate.getTime()) &&
         now > endDate;
       const reviewKey = `${b._id.toString()}::${req.user.id}`;
       return {
         ...b.toObject(),
+        status: effectiveStatus,
+        paymentConfirmed: !!payType,
         reviewEligible: !!eligible && !reviewedMap.has(reviewKey),
         reviewExists: reviewedMap.has(reviewKey),
       };
     });
+    if (pendingUpdates.length) {
+      try {
+        await Booking.bulkWrite(
+          pendingUpdates.map((u) => ({
+            updateOne: {
+              filter: { _id: u.bookingId, status: "PENDING" },
+              update: { $set: { status: u.status } },
+            },
+          }))
+        );
+      } catch (_e) {
+        // ignore
+      }
+    }
     return res.json(data);
   } catch (err) {
     console.error("Get my bookings error", err);
