@@ -225,7 +225,11 @@ const cancelBookingByHost = async (req, res) => {
       const payment = await Payment.findOne({ booking: booking._id, status: { $in: ["CONFIRMED", "INITIATED"] } });
       if (payment?.stripePaymentIntentId) {
         try {
-          await stripe.refunds.create({ payment_intent: payment.stripePaymentIntentId });
+          await stripe.refunds.create({
+            payment_intent: payment.stripePaymentIntentId,
+            refund_application_fee: true,
+            reverse_transfer: true,
+          });
           payment.status = "REFUNDED";
           await payment.save();
         } catch (err) {

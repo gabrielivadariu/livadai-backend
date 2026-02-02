@@ -326,7 +326,11 @@ const cancelExperience = async (req, res) => {
         for (const pay of payments) {
           if (!pay.stripePaymentIntentId) continue;
           try {
-            await stripe.refunds.create({ payment_intent: pay.stripePaymentIntentId });
+            await stripe.refunds.create({
+              payment_intent: pay.stripePaymentIntentId,
+              refund_application_fee: true,
+              reverse_transfer: true,
+            });
             pay.status = "REFUNDED";
             await pay.save();
             refunded = true;

@@ -60,7 +60,13 @@ const setupRefundRetryJob = () => {
           }
           try {
             await stripe.refunds.create(
-              paymentIntentId ? { payment_intent: paymentIntentId } : { charge: chargeId },
+              paymentIntentId
+                ? {
+                    payment_intent: paymentIntentId,
+                    refund_application_fee: true,
+                    reverse_transfer: true,
+                  }
+                : { charge: chargeId, refund_application_fee: true, reverse_transfer: true },
               { idempotencyKey: `refund_retry_${bk._id}_${bk.refundAttempts}` }
             );
             if (payment) {
