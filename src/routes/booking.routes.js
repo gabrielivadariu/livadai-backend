@@ -40,12 +40,6 @@ router.post("/report-user", authenticate, reportUser);
     if (hostId !== req.user.id && explorerId !== req.user.id) {
       return res.status(403).json({ message: "Forbidden" });
     }
-    const allowedStatuses = new Set(["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"]);
-    let canViewClientPhone = false;
-    const isHost = booking.host.toString() === req.user.id;
-    if (isHost && allowedStatuses.has(booking.status)) {
-      canViewClientPhone = true;
-    }
     const obj = booking.toObject();
     if (obj.experience?._id) {
       try {
@@ -61,10 +55,10 @@ router.post("/report-user", authenticate, reportUser);
         console.error("Booking detail booked spots error", err);
       }
     }
-    if (!canViewClientPhone && obj.explorer) {
+    if (obj.explorer) {
       delete obj.explorer.phone;
     }
-    obj.canViewClientPhone = canViewClientPhone;
+    obj.canViewClientPhone = false;
     try {
       const confirmed = await Payment.findOne({ booking: booking._id, status: "CONFIRMED" }).select("paymentType");
       obj.paymentConfirmed = !!confirmed;
