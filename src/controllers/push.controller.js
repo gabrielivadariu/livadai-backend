@@ -25,12 +25,13 @@ const sendPushNotification = async ({ userId, title, body, data = {} }) => {
       console.debug("push skipped: missing token", { userId });
       return;
     }
-    if (!token.startsWith("ExponentPushToken")) {
+    const isValidToken = /^Expo(nent)?PushToken\[/.test(token);
+    if (!isValidToken) {
       console.debug("push skipped: invalid token", { userId, tokenPrefix: token.slice(0, 20) });
       return;
     }
 
-    await fetch(EXPO_PUSH_URL, {
+    const res = await fetch(EXPO_PUSH_URL, {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -44,6 +45,10 @@ const sendPushNotification = async ({ userId, title, body, data = {} }) => {
         data,
       }),
     });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.error("sendPushNotification failed", { status: res.status, text });
+    }
   } catch (err) {
     console.error("sendPushNotification error", err);
   }
