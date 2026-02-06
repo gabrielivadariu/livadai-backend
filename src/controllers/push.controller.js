@@ -42,12 +42,16 @@ const sendPushNotification = async ({ userId, title, body, data = {} }) => {
         to: token,
         title,
         body,
+        sound: "default",
+        priority: "high",
         data,
       }),
     });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      console.error("sendPushNotification failed", { status: res.status, text });
+    const payload = await res.json().catch(() => null);
+    const status = payload?.data?.status;
+    if (!res.ok || status === "error") {
+      const errorData = payload?.data || payload;
+      console.error("sendPushNotification failed", { status: res.status, errorData });
     }
   } catch (err) {
     console.error("sendPushNotification error", err);
