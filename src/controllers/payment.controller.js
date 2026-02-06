@@ -76,7 +76,7 @@ const createCheckout = async (req, res) => {
 
     const baseCurrency = "ron";
     const depositCurrency = "ron";
-    const serviceFeeAmountMinor = 1 * 100;
+    const serviceFeeAmountMinor = 2 * 100;
     const unitAmount = isServiceFee ? serviceFeeAmountMinor : Math.round((exp.price || 0) * 100);
     const amount = unitAmount * qty;
     if (amount <= 0) return res.status(400).json({ message: "Invalid price" });
