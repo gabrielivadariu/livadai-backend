@@ -48,7 +48,7 @@ const sendPushNotification = async ({ userId, title, body, data = {} }) => {
       }),
     });
     const payload = await res.json().catch(() => null);
-    const status = payload?.data?.status;
+    const status = payload?.data?.status || payload?.data?.[0]?.status;
     if (!res.ok || status === "error") {
       const errorData = payload?.data || payload;
       console.error("sendPushNotification failed", { status: res.status, errorData });
