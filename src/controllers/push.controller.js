@@ -58,4 +58,19 @@ const sendPushNotification = async ({ userId, title, body, data = {} }) => {
   }
 };
 
-module.exports = { savePushToken, sendPushNotification };
+const sendTestPush = async (req, res) => {
+  try {
+    await sendPushNotification({
+      userId: req.user.id,
+      title: "LIVADAI test",
+      body: "Notificare de test. Dacă vezi asta, push-urile sunt OK.",
+      data: { type: "TEST_PUSH" },
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("sendTestPush error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+module.exports = { savePushToken, sendPushNotification, sendTestPush };
