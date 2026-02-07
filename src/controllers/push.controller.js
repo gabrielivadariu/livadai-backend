@@ -2,6 +2,45 @@ const User = require("../models/user.model");
 const fetch = require("node-fetch");
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
+const EXPO_RECEIPTS_URL = "https://exp.host/--/api/v2/push/getReceipts";
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const fetchReceiptWithRetry = async (ticketId, { attempts = 4, delayMs = 5000 } = {}) => {
+  for (let i = 0; i < attempts; i += 1) {
+    const receiptRes = await fetch(EXPO_RECEIPTS_URL, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Accept-encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ids: [ticketId] }),
+    });
+    const receiptPayload = await receiptRes.json().catch(() => null);
+    const receipt = receiptPayload?.data?.[ticketId];
+    if (receipt?.status) return receipt;
+    if (i < attempts - 1) await sleep(delayMs);
+  }
+  return null;
+};
+
+const handleReceipt = async ({ ticketId, userId, tokenPrefix }) => {
+  try {
+    const receipt = await fetchReceiptWithRetry(ticketId);
+    if (!receipt) {
+      console.warn("[push] receipt pending", { ticketId, userId, tokenPrefix });
+      return;
+    }
+    console.log("[push] receipt", { ticketId, userId, tokenPrefix, receipt });
+    if (receipt.status === "error" && receipt?.details?.error === "DeviceNotRegistered") {
+      await User.findByIdAndUpdate(userId, { $unset: { expoPushToken: 1 } });
+      console.warn("[push] removed invalid token", { userId, tokenPrefix });
+    }
+  } catch (err) {
+    console.error("[push] receipt check error", { ticketId, userId, message: err?.message || String(err) });
+  }
+};
 
 const savePushToken = async (req, res) => {
   try {
@@ -51,13 +90,18 @@ const sendPushNotification = async ({ userId, title, body, data = {} }) => {
       body: JSON.stringify(payloadToSend),
     });
     const payload = await res.json().catch(() => null);
-    const status = payload?.data?.status || payload?.data?.[0]?.status;
+    const ticket = payload?.data?.[0] || payload?.data;
+    const status = ticket?.status;
     if (!res.ok || status === "error") {
       const errorData = payload?.data || payload;
       console.error("sendPushNotification failed", { status: res.status, errorData });
       return { ok: false, status: res.status, error: errorData };
     }
-    console.log("[push] expo response", payload?.data || payload);
+    const ticketId = ticket?.id;
+    console.log("[push] expo response", { ticket });
+    if (ticketId) {
+      handleReceipt({ ticketId, userId, tokenPrefix: token.slice(0, 20) });
+    }
     return { ok: true, status: res.status, data: payload?.data || payload };
   } catch (err) {
     console.error("sendPushNotification error", err);
@@ -74,26 +118,10 @@ const sendTestPush = async (req, res) => {
       data: { type: "TEST_PUSH" },
     });
     let receipt = null;
-    try {
-      const ticket = result?.data?.[0] || result?.data;
-      const receiptId = ticket?.id;
-      if (receiptId) {
-        const receiptRes = await fetch("https://exp.host/--/api/v2/push/getReceipts", {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            "Accept-encoding": "gzip, deflate",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ ids: [receiptId] }),
-        });
-        const receiptPayload = await receiptRes.json().catch(() => null);
-        receipt = receiptPayload?.data?.[receiptId] || receiptPayload;
-        console.log("[push] receipt", { receiptId, receipt });
-      }
-    } catch (_e) {
-      receipt = null;
-    }
+    const ticket = result?.data?.[0] || result?.data;
+    const receiptId = ticket?.id;
+    if (receiptId) receipt = await fetchReceiptWithRetry(receiptId, { attempts: 6, delayMs: 3000 });
+    if (receiptId) console.log("[push] test receipt", { receiptId, receipt });
     return res.json({ success: true, result, receipt });
   } catch (err) {
     console.error("sendTestPush error", err);
