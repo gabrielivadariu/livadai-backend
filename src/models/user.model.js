@@ -61,6 +61,7 @@ const userSchema = new mongoose.Schema(
     isBanned: { type: Boolean, default: false },
     isBlocked: { type: Boolean, default: false },
     expoPushToken: { type: String },
+    expoPushTokens: { type: [String], default: [] },
     termsAccepted: { type: Boolean, default: false },
     termsAcceptedAt: { type: Date },
     termsVersion: { type: String },

@@ -5,6 +5,7 @@ const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const EXPO_RECEIPTS_URL = "https://exp.host/--/api/v2/push/getReceipts";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const TOKEN_REGEX = /^Expo(nent)?PushToken\[/;
 
 const fetchReceiptWithRetry = async (ticketId, { attempts = 4, delayMs = 5000 } = {}) => {
   for (let i = 0; i < attempts; i += 1) {
@@ -25,7 +26,18 @@ const fetchReceiptWithRetry = async (ticketId, { attempts = 4, delayMs = 5000 } 
   return null;
 };
 
-const handleReceipt = async ({ ticketId, userId, tokenPrefix }) => {
+const removeUserToken = async ({ userId, token }) => {
+  const update = {
+    $pull: { expoPushTokens: token },
+  };
+  const current = await User.findById(userId).select("expoPushToken").lean();
+  if (current?.expoPushToken === token) {
+    update.$unset = { expoPushToken: 1 };
+  }
+  await User.findByIdAndUpdate(userId, update);
+};
+
+const handleReceipt = async ({ ticketId, userId, token, tokenPrefix }) => {
   try {
     const receipt = await fetchReceiptWithRetry(ticketId);
     if (!receipt) {
@@ -33,22 +45,43 @@ const handleReceipt = async ({ ticketId, userId, tokenPrefix }) => {
       return;
     }
     console.log("[push] receipt", { ticketId, userId, tokenPrefix, receipt });
-    if (receipt.status === "error" && receipt?.details?.error === "DeviceNotRegistered") {
-      await User.findByIdAndUpdate(userId, { $unset: { expoPushToken: 1 } });
-      console.warn("[push] removed invalid token", { userId, tokenPrefix });
+    const apnsReason = receipt?.details?.apns?.reason;
+    const shouldRemoveToken =
+      receipt.status === "error" &&
+      (receipt?.details?.error === "DeviceNotRegistered" ||
+        apnsReason === "BadEnvironmentKeyInToken" ||
+        String(receipt?.message || "").includes("BadEnvironmentKeyInToken"));
+    if (shouldRemoveToken) {
+      await removeUserToken({ userId, token });
+      console.warn("[push] removed invalid token", { userId, tokenPrefix, apnsReason });
     }
   } catch (err) {
     console.error("[push] receipt check error", { ticketId, userId, message: err?.message || String(err) });
   }
 };
 
+const collectUserTokens = (user) => {
+  const set = new Set();
+  if (user?.expoPushToken) set.add(user.expoPushToken);
+  if (Array.isArray(user?.expoPushTokens)) {
+    for (const token of user.expoPushTokens) {
+      if (token) set.add(token);
+    }
+  }
+  return Array.from(set);
+};
+
 const savePushToken = async (req, res) => {
   try {
     const { expoPushToken } = req.body;
     if (!expoPushToken) return res.status(400).json({ message: "expoPushToken required" });
+    if (!TOKEN_REGEX.test(expoPushToken)) return res.status(400).json({ message: "Invalid expoPushToken format" });
     const tokenPrefix = expoPushToken.slice(0, 20);
     console.log("[push] save token", { userId: req.user.id, tokenPrefix });
-    await User.findByIdAndUpdate(req.user.id, { expoPushToken });
+    await User.findByIdAndUpdate(req.user.id, {
+      expoPushToken,
+      $addToSet: { expoPushTokens: expoPushToken },
+    });
     return res.json({ success: true, tokenPrefix });
   } catch (err) {
     console.error("savePushToken error", err);
@@ -59,50 +92,60 @@ const savePushToken = async (req, res) => {
 const sendPushNotification = async ({ userId, title, body, data = {} }) => {
   if (!userId) return;
   try {
-    const user = await User.findById(userId).select("expoPushToken");
-    const token = user?.expoPushToken;
-    if (!token) {
+    const user = await User.findById(userId).select("expoPushToken expoPushTokens");
+    const tokens = collectUserTokens(user);
+    if (!tokens.length) {
       console.debug("push skipped: missing token", { userId });
       return { ok: false, reason: "missing_token" };
     }
-    const isValidToken = /^Expo(nent)?PushToken\[/.test(token);
-    if (!isValidToken) {
-      console.debug("push skipped: invalid token", { userId, tokenPrefix: token.slice(0, 20) });
-      return { ok: false, reason: "invalid_token" };
+    const results = [];
+
+    for (const token of tokens) {
+      if (!TOKEN_REGEX.test(token)) {
+        console.debug("push skipped: invalid token", { userId, tokenPrefix: token.slice(0, 20) });
+        await removeUserToken({ userId, token });
+        results.push({ ok: false, reason: "invalid_token", tokenPrefix: token.slice(0, 20) });
+        continue;
+      }
+
+      const payloadToSend = {
+        to: token,
+        title,
+        body,
+        sound: "default",
+        priority: "high",
+        data,
+      };
+      console.log("[push] send", { userId, tokenPrefix: token.slice(0, 20), payload: { title, body, data } });
+      const res = await fetch(EXPO_PUSH_URL, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Accept-encoding": "gzip, deflate",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payloadToSend),
+      });
+      const payload = await res.json().catch(() => null);
+      const ticket = payload?.data?.[0] || payload?.data;
+      const status = ticket?.status;
+      if (!res.ok || status === "error") {
+        const errorData = payload?.data || payload;
+        console.error("sendPushNotification failed", { status: res.status, tokenPrefix: token.slice(0, 20), errorData });
+        results.push({ ok: false, status: res.status, error: errorData, tokenPrefix: token.slice(0, 20) });
+        continue;
+      }
+      const ticketId = ticket?.id;
+      console.log("[push] expo response", { tokenPrefix: token.slice(0, 20), ticket });
+      if (ticketId) {
+        handleReceipt({ ticketId, userId, token, tokenPrefix: token.slice(0, 20) });
+      }
+      results.push({ ok: true, status: res.status, data: payload?.data || payload, tokenPrefix: token.slice(0, 20) });
     }
 
-    const payloadToSend = {
-      to: token,
-      title,
-      body,
-      sound: "default",
-      priority: "high",
-      data,
-    };
-    console.log("[push] send", { userId, tokenPrefix: token.slice(0, 20), payload: { title, body, data } });
-    const res = await fetch(EXPO_PUSH_URL, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Accept-encoding": "gzip, deflate",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payloadToSend),
-    });
-    const payload = await res.json().catch(() => null);
-    const ticket = payload?.data?.[0] || payload?.data;
-    const status = ticket?.status;
-    if (!res.ok || status === "error") {
-      const errorData = payload?.data || payload;
-      console.error("sendPushNotification failed", { status: res.status, errorData });
-      return { ok: false, status: res.status, error: errorData };
-    }
-    const ticketId = ticket?.id;
-    console.log("[push] expo response", { ticket });
-    if (ticketId) {
-      handleReceipt({ ticketId, userId, tokenPrefix: token.slice(0, 20) });
-    }
-    return { ok: true, status: res.status, data: payload?.data || payload };
+    const hasSuccess = results.some((result) => result.ok);
+    if (!hasSuccess) return { ok: false, reason: "all_tokens_failed", results };
+    return { ok: true, results };
   } catch (err) {
     console.error("sendPushNotification error", err);
     return { ok: false, reason: "exception", error: err?.message || String(err) };
@@ -118,7 +161,8 @@ const sendTestPush = async (req, res) => {
       data: { type: "TEST_PUSH" },
     });
     let receipt = null;
-    const ticket = result?.data?.[0] || result?.data;
+    const firstSuccess = result?.results?.find((item) => item.ok);
+    const ticket = firstSuccess?.data?.[0] || firstSuccess?.data;
     const receiptId = ticket?.id;
     if (receiptId) receipt = await fetchReceiptWithRetry(receiptId, { attempts: 6, delayMs: 3000 });
     if (receiptId) console.log("[push] test receipt", { receiptId, receipt });
@@ -131,10 +175,11 @@ const sendTestPush = async (req, res) => {
 
 const debugPushToken = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select("expoPushToken");
+    const user = await User.findById(req.user.id).select("expoPushToken expoPushTokens");
     return res.json({
-      hasToken: !!user?.expoPushToken,
+      hasToken: collectUserTokens(user).length > 0,
       token: user?.expoPushToken || null,
+      tokens: collectUserTokens(user),
     });
   } catch (err) {
     console.error("debugPushToken error", err);
