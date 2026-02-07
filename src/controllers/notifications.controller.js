@@ -54,7 +54,6 @@ const shouldThrottleAttendancePush = async ({ user, data }) => {
 const createNotification = async ({ user, type, title, message, data = {}, push = true }) => {
   if (!user || !type || !title || !message) return null;
   try {
-    const notif = await Notification.create({ user, type, title, message, data });
     let shouldPush = !!push;
     if (!push) {
       console.debug("push skipped: push disabled", { type, user: normalizeId(user) });
@@ -73,6 +72,9 @@ const createNotification = async ({ user, type, title, message, data = {}, push 
         console.debug("push skipped: attendance throttled", { type, user: normalizeId(user), bookingId: normalizeId(data?.bookingId) });
       }
     }
+
+    const notif = await Notification.create({ user, type, title, message, data });
+
     if (shouldPush) {
       sendPushNotification({
         userId: user,
