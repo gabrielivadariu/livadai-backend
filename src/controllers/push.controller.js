@@ -73,4 +73,17 @@ const sendTestPush = async (req, res) => {
   }
 };
 
-module.exports = { savePushToken, sendPushNotification, sendTestPush };
+const debugPushToken = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("expoPushToken");
+    return res.json({
+      hasToken: !!user?.expoPushToken,
+      token: user?.expoPushToken || null,
+    });
+  } catch (err) {
+    console.error("debugPushToken error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+module.exports = { savePushToken, sendPushNotification, sendTestPush, debugPushToken };
