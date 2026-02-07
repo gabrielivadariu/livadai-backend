@@ -3,9 +3,15 @@ const fetch = require("node-fetch");
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const EXPO_RECEIPTS_URL = "https://exp.host/--/api/v2/push/getReceipts";
+const PUSH_LOG_VERBOSE = process.env.PUSH_LOG_VERBOSE === "true";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const TOKEN_REGEX = /^Expo(nent)?PushToken\[/;
+const logVerbose = (message, payload) => {
+  if (PUSH_LOG_VERBOSE) {
+    console.log(message, payload);
+  }
+};
 
 const fetchReceiptWithRetry = async (ticketId, { attempts = 4, delayMs = 5000 } = {}) => {
   for (let i = 0; i < attempts; i += 1) {
@@ -41,10 +47,9 @@ const handleReceipt = async ({ ticketId, userId, token, tokenPrefix }) => {
   try {
     const receipt = await fetchReceiptWithRetry(ticketId);
     if (!receipt) {
-      console.warn("[push] receipt pending", { ticketId, userId, tokenPrefix });
+      logVerbose("[push] receipt pending", { ticketId, userId, tokenPrefix });
       return;
     }
-    console.log("[push] receipt", { ticketId, userId, tokenPrefix, receipt });
     const apnsReason = receipt?.details?.apns?.reason;
     const shouldRemoveToken =
       receipt.status === "error" &&
@@ -54,7 +59,13 @@ const handleReceipt = async ({ ticketId, userId, token, tokenPrefix }) => {
     if (shouldRemoveToken) {
       await removeUserToken({ userId, token });
       console.warn("[push] removed invalid token", { userId, tokenPrefix, apnsReason });
+      return;
     }
+    if (receipt.status === "error") {
+      console.error("[push] receipt error", { ticketId, userId, tokenPrefix, receipt });
+      return;
+    }
+    logVerbose("[push] receipt ok", { ticketId, userId, tokenPrefix });
   } catch (err) {
     console.error("[push] receipt check error", { ticketId, userId, message: err?.message || String(err) });
   }
@@ -77,7 +88,7 @@ const savePushToken = async (req, res) => {
     if (!expoPushToken) return res.status(400).json({ message: "expoPushToken required" });
     if (!TOKEN_REGEX.test(expoPushToken)) return res.status(400).json({ message: "Invalid expoPushToken format" });
     const tokenPrefix = expoPushToken.slice(0, 20);
-    console.log("[push] save token", { userId: req.user.id, tokenPrefix });
+    logVerbose("[push] save token", { userId: req.user.id, tokenPrefix });
     await User.findByIdAndUpdate(req.user.id, {
       expoPushToken,
       $addToSet: { expoPushTokens: expoPushToken },
@@ -116,7 +127,7 @@ const sendPushNotification = async ({ userId, title, body, data = {} }) => {
         priority: "high",
         data,
       };
-      console.log("[push] send", { userId, tokenPrefix: token.slice(0, 20), payload: { title, body, data } });
+      logVerbose("[push] send", { userId, tokenPrefix: token.slice(0, 20), payload: { title, type: data?.type } });
       const res = await fetch(EXPO_PUSH_URL, {
         method: "POST",
         headers: {
@@ -136,7 +147,7 @@ const sendPushNotification = async ({ userId, title, body, data = {} }) => {
         continue;
       }
       const ticketId = ticket?.id;
-      console.log("[push] expo response", { tokenPrefix: token.slice(0, 20), ticket });
+      logVerbose("[push] expo response", { tokenPrefix: token.slice(0, 20), ticket });
       if (ticketId) {
         handleReceipt({ ticketId, userId, token, tokenPrefix: token.slice(0, 20) });
       }
@@ -165,7 +176,7 @@ const sendTestPush = async (req, res) => {
     const ticket = firstSuccess?.data?.[0] || firstSuccess?.data;
     const receiptId = ticket?.id;
     if (receiptId) receipt = await fetchReceiptWithRetry(receiptId, { attempts: 6, delayMs: 3000 });
-    if (receiptId) console.log("[push] test receipt", { receiptId, receipt });
+    if (receiptId) logVerbose("[push] test receipt", { receiptId, receipt });
     return res.json({ success: true, result, receipt });
   } catch (err) {
     console.error("sendTestPush error", err);
