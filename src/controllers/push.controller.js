@@ -69,7 +69,27 @@ const sendTestPush = async (req, res) => {
       body: "Notificare de test. Dacă vezi asta, push-urile sunt OK.",
       data: { type: "TEST_PUSH" },
     });
-    return res.json({ success: true, result });
+    let receipt = null;
+    try {
+      const ticket = result?.data?.[0] || result?.data;
+      const receiptId = ticket?.id;
+      if (receiptId) {
+        const receiptRes = await fetch("https://exp.host/--/api/v2/push/getReceipts", {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Accept-encoding": "gzip, deflate",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ ids: [receiptId] }),
+        });
+        const receiptPayload = await receiptRes.json().catch(() => null);
+        receipt = receiptPayload?.data?.[receiptId] || receiptPayload;
+      }
+    } catch (_e) {
+      receipt = null;
+    }
+    return res.json({ success: true, result, receipt });
   } catch (err) {
     console.error("sendTestPush error", err);
     return res.status(500).json({ message: "Server error" });
