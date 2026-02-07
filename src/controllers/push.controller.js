@@ -23,12 +23,12 @@ const sendPushNotification = async ({ userId, title, body, data = {} }) => {
     const token = user?.expoPushToken;
     if (!token) {
       console.debug("push skipped: missing token", { userId });
-      return;
+      return { ok: false, reason: "missing_token" };
     }
     const isValidToken = /^Expo(nent)?PushToken\[/.test(token);
     if (!isValidToken) {
       console.debug("push skipped: invalid token", { userId, tokenPrefix: token.slice(0, 20) });
-      return;
+      return { ok: false, reason: "invalid_token" };
     }
 
     const res = await fetch(EXPO_PUSH_URL, {
@@ -52,21 +52,24 @@ const sendPushNotification = async ({ userId, title, body, data = {} }) => {
     if (!res.ok || status === "error") {
       const errorData = payload?.data || payload;
       console.error("sendPushNotification failed", { status: res.status, errorData });
+      return { ok: false, status: res.status, error: errorData };
     }
+    return { ok: true, status: res.status, data: payload?.data || payload };
   } catch (err) {
     console.error("sendPushNotification error", err);
+    return { ok: false, reason: "exception", error: err?.message || String(err) };
   }
 };
 
 const sendTestPush = async (req, res) => {
   try {
-    await sendPushNotification({
+    const result = await sendPushNotification({
       userId: req.user.id,
       title: "LIVADAI test",
       body: "Notificare de test. Dacă vezi asta, push-urile sunt OK.",
       data: { type: "TEST_PUSH" },
     });
-    return res.json({ success: true });
+    return res.json({ success: true, result });
   } catch (err) {
     console.error("sendTestPush error", err);
     return res.status(500).json({ message: "Server error" });
