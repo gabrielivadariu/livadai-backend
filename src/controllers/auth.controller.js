@@ -10,6 +10,7 @@ const {
   buildPasswordChangedEmail,
 } = require("../utils/emailTemplates");
 const { validatePasswordStrength } = require("../utils/passwordPolicy");
+const { setAuthCookie, clearAuthCookie } = require("../utils/authCookies");
 
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 5;
@@ -203,6 +204,7 @@ const login = async (req, res) => {
     await user.save();
     clearLoginAttempts(loginKey);
     const token = signToken(user);
+    setAuthCookie(res, token);
     return res.json({
       message: "Login successful",
       user: buildAuthUser(user),
@@ -417,6 +419,7 @@ const verifyEmail = async (req, res) => {
     await user.save();
 
     const token = signToken(user);
+    setAuthCookie(res, token);
     return res.json({
       message: "Email verified",
       token,
@@ -452,6 +455,11 @@ const getMe = async (req, res) => {
     console.error("Get me error", err);
     return res.status(500).json({ message: "Server error" });
   }
+};
+
+const logout = async (_req, res) => {
+  clearAuthCookie(res);
+  return res.json({ message: "Logout successful" });
 };
 
 const reauth = async (req, res) => {
@@ -515,6 +523,7 @@ const becomeHost = async (req, res) => {
     await user.save();
 
     const token = signToken(user);
+    setAuthCookie(res, token);
     return res.json({
       message: "Host activated",
       user: {
@@ -544,4 +553,5 @@ module.exports = {
   reauth,
   becomeHost,
   getMe,
+  logout,
 };

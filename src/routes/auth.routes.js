@@ -11,6 +11,7 @@ const {
   reauth,
   becomeHost,
   getMe,
+  logout,
 } = require("../controllers/auth.controller");
 const { authenticate } = require("../middleware/auth.middleware");
 
@@ -28,5 +29,6 @@ router.post("/resend-email-verification", resendEmailVerification);
 router.post("/reauth", authenticate, reauth);
 router.post("/become-host", authenticate, becomeHost);
 router.get("/me", authenticate, getMe);
+router.post("/logout", logout);
 
 module.exports = router;
