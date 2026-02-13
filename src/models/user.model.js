@@ -30,6 +30,8 @@ const userSchema = new mongoose.Schema(
     shortBio: { type: String },
     profilePhoto: { type: String },
     avatar: { type: String },
+    avatarPublicId: { type: String },
+    avatarResourceType: { type: String, enum: ["image", "video", "raw"] },
     phoneVerified: { type: Boolean, default: false },
     emailVerified: { type: Boolean, default: false },
     emailVerificationCode: { type: String },

@@ -11,7 +11,7 @@ const {
   buildDeleteAccountOtpEmail,
 } = require("../utils/emailTemplates");
 const { validatePasswordStrength } = require("../utils/passwordPolicy");
-const { deleteCloudinaryUrls } = require("../utils/cloudinary-media");
+const { deleteCloudinaryUrls, getCloudinaryInfo } = require("../utils/cloudinary-media");
 
 const buildHistory = async (userId) => {
   const history = await Booking.find({ explorer: userId, status: "COMPLETED" })
@@ -67,7 +67,7 @@ const buildHistory = async (userId) => {
 
   const updateMeProfile = async (req, res) => {
   try {
-    const existingUser = await User.findById(req.user.id).select("avatar profilePhoto");
+    const existingUser = await User.findById(req.user.id).select("avatar profilePhoto avatarPublicId avatarResourceType");
     if (!existingUser) return res.status(404).json({ message: "User not found" });
 
     const { age, languages, shortBio, profilePhoto, avatar, displayName, phone, city, country } = req.body;
@@ -95,9 +95,14 @@ const buildHistory = async (userId) => {
       if (incomingAvatar === "") {
         update.avatar = "";
         update.profilePhoto = "";
+        update.avatarPublicId = null;
+        update.avatarResourceType = null;
       } else if (typeof incomingAvatar === "string" && /^https?:\/\//i.test(incomingAvatar)) {
         update.avatar = incomingAvatar;
         update.profilePhoto = incomingAvatar;
+        const avatarInfo = getCloudinaryInfo(incomingAvatar);
+        update.avatarPublicId = avatarInfo?.publicId || null;
+        update.avatarResourceType = avatarInfo?.resourceType || null;
       }
     }
     if (displayName !== undefined) {
@@ -112,7 +117,14 @@ const buildHistory = async (userId) => {
     const oldAvatar = existingUser.avatar || existingUser.profilePhoto || "";
     const nextAvatar = update.avatar !== undefined ? update.avatar : update.profilePhoto;
     if (avatarChanged && oldAvatar && oldAvatar !== nextAvatar) {
-      await deleteCloudinaryUrls([oldAvatar], {
+      const oldAvatarTarget = existingUser.avatarPublicId
+        ? {
+            url: oldAvatar,
+            publicId: existingUser.avatarPublicId,
+            resourceType: existingUser.avatarResourceType || "image",
+          }
+        : oldAvatar;
+      await deleteCloudinaryUrls([oldAvatarTarget], {
         scope: "user.profile.avatar-replaced",
       });
     }

@@ -2,7 +2,7 @@ const User = require("../models/user.model");
 const Experience = require("../models/experience.model");
 const Booking = require("../models/booking.model");
 const Review = require("../models/review.model");
-const { deleteCloudinaryUrls } = require("../utils/cloudinary-media");
+const { deleteCloudinaryUrls, getCloudinaryInfo } = require("../utils/cloudinary-media");
 
 const bookingStatusesForStats = new Set(["PAID", "COMPLETED", "DEPOSIT_PAID"]);
 
@@ -160,7 +160,7 @@ const getHostActivities = async (req, res) => {
 
 const updateMyProfile = async (req, res) => {
   try {
-    const existingUser = await User.findById(req.user.id).select("avatar profilePhoto");
+    const existingUser = await User.findById(req.user.id).select("avatar profilePhoto avatarPublicId avatarResourceType");
     if (!existingUser) return res.status(404).json({ message: "User not found" });
 
     const allowed = [
@@ -184,8 +184,13 @@ const updateMyProfile = async (req, res) => {
     if (update.avatar !== undefined) {
       if (update.avatar === "") {
         // allow clearing
+        update.avatarPublicId = null;
+        update.avatarResourceType = null;
       } else if (typeof update.avatar === "string" && /^https?:\/\//i.test(update.avatar)) {
         // keep as-is
+        const avatarInfo = getCloudinaryInfo(update.avatar);
+        update.avatarPublicId = avatarInfo?.publicId || null;
+        update.avatarResourceType = avatarInfo?.resourceType || null;
       } else {
         delete update.avatar;
       }
@@ -221,6 +226,8 @@ const updateMyProfile = async (req, res) => {
     if (update.avatar !== undefined) {
       userUpdate.avatar = update.avatar;
       userUpdate.profilePhoto = update.avatar;
+      userUpdate.avatarPublicId = update.avatarPublicId;
+      userUpdate.avatarResourceType = update.avatarResourceType;
     }
     if (update.experience !== undefined) userUpdate.experience = update.experience;
 
@@ -237,7 +244,14 @@ const updateMyProfile = async (req, res) => {
     const oldAvatar = existingUser.avatar || existingUser.profilePhoto || "";
     const nextAvatar = update.avatar;
     if (avatarChanged && oldAvatar && oldAvatar !== nextAvatar) {
-      await deleteCloudinaryUrls([oldAvatar], {
+      const oldAvatarTarget = existingUser.avatarPublicId
+        ? {
+            url: oldAvatar,
+            publicId: existingUser.avatarPublicId,
+            resourceType: existingUser.avatarResourceType || "image",
+          }
+        : oldAvatar;
+      await deleteCloudinaryUrls([oldAvatarTarget], {
         scope: "host.profile.avatar-replaced",
       });
     }

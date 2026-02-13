@@ -14,7 +14,7 @@ const {
   formatExperienceDate,
   formatExperienceLocation,
 } = require("../utils/emailTemplates");
-const { deleteCloudinaryUrls } = require("../utils/cloudinary-media");
+const { deleteCloudinaryUrls, getCloudinaryInfo, getTargetKey } = require("../utils/cloudinary-media");
 
 const validateSchedule = (payload) => {
   if (!payload.startsAt) {
@@ -62,6 +62,39 @@ const collectExperienceMediaUrls = (exp) =>
     exp?.mainImageUrl,
     exp?.coverImageUrl,
   ].filter(Boolean);
+
+const buildMediaTargetsFromUrls = (urls) => {
+  const refs = [];
+  const seen = new Set();
+  for (const url of urls || []) {
+    const info = getCloudinaryInfo(url);
+    if (!info) continue;
+    const target = {
+      url,
+      publicId: info.publicId,
+      resourceType: info.resourceType,
+    };
+    const key = getTargetKey(target);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    refs.push(target);
+  }
+  return refs;
+};
+
+const getExperienceMediaTargets = (exp) => {
+  const refs = Array.isArray(exp?.mediaRefs) ? exp.mediaRefs : [];
+  if (refs.length) {
+    return refs
+      .map((ref) => ({
+        url: ref?.url,
+        publicId: ref?.publicId,
+        resourceType: ref?.resourceType || "image",
+      }))
+      .filter((ref) => !!ref.publicId || !!ref.url);
+  }
+  return buildMediaTargetsFromUrls(collectExperienceMediaUrls(exp));
+};
 
 const createExperience = async (req, res) => {
   try {
@@ -140,6 +173,7 @@ const createExperience = async (req, res) => {
     if (payload.images?.length && !payload.mainImageUrl) {
       payload.mainImageUrl = payload.images[0];
     }
+    payload.mediaRefs = buildMediaTargetsFromUrls(collectExperienceMediaUrls(payload));
 
     if (!payload.languages) payload.languages = [];
 
@@ -223,14 +257,22 @@ const updateExperience = async (req, res) => {
       return res.status(400).json({ message: "Cannot change currency after bookings exist" });
     }
 
+    const mergedMedia = {
+      images: update.images !== undefined ? update.images : existingExp.images,
+      videos: update.videos !== undefined ? update.videos : existingExp.videos,
+      mainImageUrl: update.mainImageUrl !== undefined ? update.mainImageUrl : existingExp.mainImageUrl,
+      coverImageUrl: update.coverImageUrl !== undefined ? update.coverImageUrl : existingExp.coverImageUrl,
+    };
+    update.mediaRefs = buildMediaTargetsFromUrls(collectExperienceMediaUrls(mergedMedia));
+
     const exp = await Experience.findByIdAndUpdate(existingExp._id, { $set: update }, { new: true });
     if (!exp) return res.status(404).json({ message: "Experience not found" });
 
-    const previousUrls = collectExperienceMediaUrls(existingExp);
-    const currentUrls = new Set(collectExperienceMediaUrls(exp));
-    const removedUrls = previousUrls.filter((url) => !currentUrls.has(url));
-    if (removedUrls.length) {
-      await deleteCloudinaryUrls(removedUrls, {
+    const previousTargets = getExperienceMediaTargets(existingExp);
+    const currentKeys = new Set(getExperienceMediaTargets(exp).map((target) => getTargetKey(target)));
+    const removedTargets = previousTargets.filter((target) => !currentKeys.has(getTargetKey(target)));
+    if (removedTargets.length) {
+      await deleteCloudinaryUrls(removedTargets, {
         scope: "experience.update",
       });
     }
@@ -251,10 +293,10 @@ const deleteExperience = async (req, res) => {
     const hasBookings = await Booking.findOne({ experience: exp._id });
 
     if (!hasBookings) {
-      const mediaUrls = collectExperienceMediaUrls(exp);
+      const mediaTargets = getExperienceMediaTargets(exp);
       await Experience.deleteOne({ _id: exp._id, host: req.user.id });
-      if (mediaUrls.length) {
-        await deleteCloudinaryUrls(mediaUrls, {
+      if (mediaTargets.length) {
+        await deleteCloudinaryUrls(mediaTargets, {
           scope: "experience.delete",
         });
       }

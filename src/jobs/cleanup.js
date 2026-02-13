@@ -27,20 +27,33 @@ const getExperienceEndDate = (exp) => {
 
 const hasMedia = (exp) =>
   !!(
+    (exp.mediaRefs && exp.mediaRefs.length) ||
     (exp.images && exp.images.length) ||
     (exp.videos && exp.videos.length) ||
     exp.mainImageUrl ||
     exp.coverImageUrl
   );
 
-const getExperienceMediaUrls = (exp) => [
-  ...(exp.images || []),
-  ...(exp.videos || []),
-  exp.mainImageUrl,
-  exp.coverImageUrl,
-].filter(Boolean);
+const getExperienceMediaTargets = (exp) => {
+  if (Array.isArray(exp.mediaRefs) && exp.mediaRefs.length) {
+    return exp.mediaRefs
+      .map((ref) => ({
+        url: ref?.url,
+        publicId: ref?.publicId,
+        resourceType: ref?.resourceType || "image",
+      }))
+      .filter((ref) => !!ref.publicId || !!ref.url);
+  }
+  return [
+    ...(exp.images || []),
+    ...(exp.videos || []),
+    exp.mainImageUrl,
+    exp.coverImageUrl,
+  ].filter(Boolean);
+};
 
 const clearExperienceMedia = (exp) => {
+  exp.mediaRefs = [];
   exp.images = [];
   exp.videos = [];
   exp.mainImageUrl = null;
@@ -71,7 +84,7 @@ const removeExperienceMediaIfEligible = async ({
   });
   if (activeExists) return false;
 
-  await deleteCloudinaryUrls(getExperienceMediaUrls(exp), {
+  await deleteCloudinaryUrls(getExperienceMediaTargets(exp), {
     scope: `cleanup:${reason || "unknown"}`,
   });
   clearExperienceMedia(exp);
@@ -99,7 +112,7 @@ const setupCleanupJob = () => {
         status: { $in: closedStatuses },
       }).populate(
         "experience",
-        "endsAt endDate startsAt startDate durationMinutes images videos mainImageUrl coverImageUrl mediaCleanedAt"
+        "endsAt endDate startsAt startDate durationMinutes mediaRefs images videos mainImageUrl coverImageUrl mediaCleanedAt"
       );
 
       for (const booking of closedBookings) {
@@ -166,7 +179,7 @@ const setupCleanupJob = () => {
         isActive: false,
         status: { $in: ["NO_BOOKINGS", "CANCELLED", "cancelled"] },
         $or: [{ mediaCleanedAt: { $exists: false } }, { mediaCleanedAt: null }],
-      }).select("status endsAt endDate startsAt startDate durationMinutes images videos mainImageUrl coverImageUrl mediaCleanedAt updatedAt");
+      }).select("status endsAt endDate startsAt startDate durationMinutes mediaRefs images videos mainImageUrl coverImageUrl mediaCleanedAt updatedAt");
 
       for (const exp of inactiveArchived) {
         const eligibleAt =

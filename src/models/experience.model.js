@@ -53,6 +53,13 @@ const experienceSchema = new mongoose.Schema(
     images: [{ type: String }],
     videos: [{ type: String }],
     coverImageUrl: { type: String, default: null },
+    mediaRefs: [
+      {
+        url: { type: String },
+        publicId: { type: String },
+        resourceType: { type: String, enum: ["image", "video", "raw"], default: "image" },
+      },
+    ],
     languages: { type: [String], default: [] },
     isActive: { type: Boolean, default: true },
     reminderHostSent: { type: Boolean, default: false },
