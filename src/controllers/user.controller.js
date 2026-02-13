@@ -11,6 +11,7 @@ const {
   buildDeleteAccountOtpEmail,
 } = require("../utils/emailTemplates");
 const { validatePasswordStrength } = require("../utils/passwordPolicy");
+const { deleteCloudinaryUrls } = require("../utils/cloudinary-media");
 
 const buildHistory = async (userId) => {
   const history = await Booking.find({ explorer: userId, status: "COMPLETED" })
@@ -66,6 +67,9 @@ const buildHistory = async (userId) => {
 
   const updateMeProfile = async (req, res) => {
   try {
+    const existingUser = await User.findById(req.user.id).select("avatar profilePhoto");
+    if (!existingUser) return res.status(404).json({ message: "User not found" });
+
     const { age, languages, shortBio, profilePhoto, avatar, displayName, phone, city, country } = req.body;
     if (age && (Number(age) < 18 || Number(age) > 99)) {
       return res.status(400).json({ message: "Age must be between 18 and 99" });
@@ -103,6 +107,16 @@ const buildHistory = async (userId) => {
     if (phone !== undefined) update.phone = phone;
 
     await User.findByIdAndUpdate(req.user.id, update);
+
+    const avatarChanged = update.avatar !== undefined || update.profilePhoto !== undefined;
+    const oldAvatar = existingUser.avatar || existingUser.profilePhoto || "";
+    const nextAvatar = update.avatar !== undefined ? update.avatar : update.profilePhoto;
+    if (avatarChanged && oldAvatar && oldAvatar !== nextAvatar) {
+      await deleteCloudinaryUrls([oldAvatar], {
+        scope: "user.profile.avatar-replaced",
+      });
+    }
+
     return getMeProfile(req, res);
   } catch (err) {
     console.error("updateMeProfile error", err);

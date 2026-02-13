@@ -2,6 +2,7 @@ const User = require("../models/user.model");
 const Experience = require("../models/experience.model");
 const Booking = require("../models/booking.model");
 const Review = require("../models/review.model");
+const { deleteCloudinaryUrls } = require("../utils/cloudinary-media");
 
 const bookingStatusesForStats = new Set(["PAID", "COMPLETED", "DEPOSIT_PAID"]);
 
@@ -159,6 +160,9 @@ const getHostActivities = async (req, res) => {
 
 const updateMyProfile = async (req, res) => {
   try {
+    const existingUser = await User.findById(req.user.id).select("avatar profilePhoto");
+    if (!existingUser) return res.status(404).json({ message: "User not found" });
+
     const allowed = [
       "display_name",
       "displayName",
@@ -228,6 +232,16 @@ const updateMyProfile = async (req, res) => {
       "name displayName display_name city country languages about_me age avatar phone experience"
     );
     if (!user) return res.status(404).json({ message: "User not found" });
+
+    const avatarChanged = update.avatar !== undefined;
+    const oldAvatar = existingUser.avatar || existingUser.profilePhoto || "";
+    const nextAvatar = update.avatar;
+    if (avatarChanged && oldAvatar && oldAvatar !== nextAvatar) {
+      await deleteCloudinaryUrls([oldAvatar], {
+        scope: "host.profile.avatar-replaced",
+      });
+    }
+
     const displayName = user.displayName || user.display_name || user.name;
     return res.json({
       ...user.toObject(),

@@ -1,55 +1,6 @@
 const Experience = require("../models/experience.model");
 const Booking = require("../models/booking.model");
-const cloudinary = require("cloudinary").v2;
-
-const isRealValue = (v) => v && v !== "dummy";
-
-const hasCloudinary =
-  isRealValue(process.env.CLOUDINARY_CLOUD_NAME) &&
-  isRealValue(process.env.CLOUDINARY_API_KEY) &&
-  isRealValue(process.env.CLOUDINARY_API_SECRET);
-
-if (hasCloudinary) {
-  cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET,
-  });
-}
-
-const getCloudinaryInfo = (url) => {
-  if (!url || typeof url !== "string") return null;
-  if (!url.includes("res.cloudinary.com") || !url.includes("/upload/")) return null;
-  const resourceType = url.includes("/video/upload/")
-    ? "video"
-    : url.includes("/raw/upload/")
-      ? "raw"
-      : "image";
-  const parts = url.split("/upload/");
-  if (parts.length < 2) return null;
-  let publicPath = parts[1].split("?")[0];
-  const versionSplit = publicPath.split(/\/v\d+\//);
-  if (versionSplit.length > 1) {
-    publicPath = versionSplit[versionSplit.length - 1];
-  }
-  publicPath = publicPath.replace(/\.[^/.]+$/, "");
-  if (!publicPath) return null;
-  return { publicId: publicPath, resourceType };
-};
-
-const deleteCloudinaryMedia = async (urls) => {
-  if (!hasCloudinary) return;
-  const unique = Array.from(new Set(urls.filter(Boolean)));
-  for (const url of unique) {
-    const info = getCloudinaryInfo(url);
-    if (!info) continue;
-    try {
-      await cloudinary.uploader.destroy(info.publicId, { resource_type: info.resourceType });
-    } catch (err) {
-      console.error("Cleanup: failed to delete Cloudinary asset", { url, err: err?.message || err });
-    }
-  }
-};
+const { deleteCloudinaryUrls } = require("../utils/cloudinary-media");
 
 const getExperienceEndDate = (exp) => {
   if (!exp) return null;
@@ -72,6 +23,64 @@ const getExperienceEndDate = (exp) => {
     }
   }
   return null;
+};
+
+const hasMedia = (exp) =>
+  !!(
+    (exp.images && exp.images.length) ||
+    (exp.videos && exp.videos.length) ||
+    exp.mainImageUrl ||
+    exp.coverImageUrl
+  );
+
+const getExperienceMediaUrls = (exp) => [
+  ...(exp.images || []),
+  ...(exp.videos || []),
+  exp.mainImageUrl,
+  exp.coverImageUrl,
+].filter(Boolean);
+
+const clearExperienceMedia = (exp) => {
+  exp.images = [];
+  exp.videos = [];
+  exp.mainImageUrl = null;
+  exp.coverImageUrl = null;
+  exp.mediaCleanedAt = new Date();
+};
+
+const removeExperienceMediaIfEligible = async ({
+  exp,
+  eligibleAt,
+  mediaCutoff,
+  activeStatuses,
+  reason,
+}) => {
+  if (!exp || exp.mediaCleanedAt) return false;
+
+  if (!hasMedia(exp)) {
+    exp.mediaCleanedAt = new Date();
+    await exp.save();
+    return true;
+  }
+
+  if (!eligibleAt || eligibleAt > mediaCutoff) return false;
+
+  const activeExists = await Booking.exists({
+    experience: exp._id,
+    status: { $in: activeStatuses },
+  });
+  if (activeExists) return false;
+
+  await deleteCloudinaryUrls(getExperienceMediaUrls(exp), {
+    scope: `cleanup:${reason || "unknown"}`,
+  });
+  clearExperienceMedia(exp);
+  await exp.save();
+  console.log("Cleanup: removed experience media", {
+    id: exp._id.toString(),
+    reason: reason || "unknown",
+  });
+  return true;
 };
 
       // Runs periodically to hide/delete stale experiences.
@@ -97,17 +106,6 @@ const setupCleanupJob = () => {
         const exp = booking.experience;
         if (!exp || exp.mediaCleanedAt) continue;
 
-        const hasMedia =
-          (exp.images && exp.images.length) ||
-          (exp.videos && exp.videos.length) ||
-          exp.mainImageUrl ||
-          exp.coverImageUrl;
-        if (!hasMedia) {
-          exp.mediaCleanedAt = new Date();
-          await exp.save();
-          continue;
-        }
-
         let eligibleAt = null;
         if (["COMPLETED", "AUTO_COMPLETED", "NO_SHOW"].includes(booking.status)) {
           eligibleAt = getExperienceEndDate(exp);
@@ -116,29 +114,13 @@ const setupCleanupJob = () => {
         } else if (booking.status === "REFUNDED") {
           eligibleAt = booking.refundedAt || booking.updatedAt || booking.createdAt;
         }
-
-        if (!eligibleAt || eligibleAt > mediaCutoff) continue;
-
-        const activeExists = await Booking.exists({
-          experience: exp._id,
-          status: { $in: activeStatuses },
+        await removeExperienceMediaIfEligible({
+          exp,
+          eligibleAt,
+          mediaCutoff,
+          activeStatuses,
+          reason: `closed-booking:${booking.status.toLowerCase()}`,
         });
-        if (activeExists) continue;
-
-        const urls = [
-          ...(exp.images || []),
-          ...(exp.videos || []),
-          exp.mainImageUrl,
-          exp.coverImageUrl,
-        ];
-        await deleteCloudinaryMedia(urls);
-        exp.images = [];
-        exp.videos = [];
-        exp.mainImageUrl = null;
-        exp.coverImageUrl = null;
-        exp.mediaCleanedAt = new Date();
-        await exp.save();
-        console.log("Cleanup: removed experience media", { id: exp._id.toString(), booking: booking._id.toString() });
       }
 
       const ended = await Experience.find({
@@ -151,33 +133,53 @@ const setupCleanupJob = () => {
         if (bookingsCount === 0) {
           exp.isActive = false;
           exp.status = "NO_BOOKINGS";
-          if (!exp.mediaCleanedAt) {
-            const eligibleAt = getExperienceEndDate(exp);
-            if (eligibleAt && eligibleAt <= mediaCutoff) {
-              const urls = [
-                ...(exp.images || []),
-                ...(exp.videos || []),
-                exp.mainImageUrl,
-                exp.coverImageUrl,
-              ];
-              await deleteCloudinaryMedia(urls);
-              exp.images = [];
-              exp.videos = [];
-              exp.mainImageUrl = null;
-              exp.coverImageUrl = null;
-              exp.mediaCleanedAt = new Date();
-            }
-          }
-          await exp.save();
+          const mediaHandled = await removeExperienceMediaIfEligible({
+            exp,
+            eligibleAt: getExperienceEndDate(exp),
+            mediaCutoff,
+            activeStatuses,
+            reason: "ended-no-bookings",
+          });
+          if (!mediaHandled) await exp.save();
           console.log("Cleanup: archived expired experience with no bookings", { id: exp._id.toString() });
         } else {
           exp.isActive = false;
           exp.status = "cancelled";
           exp.soldOut = true;
           exp.remainingSpots = 0;
-          await exp.save();
+          const mediaHandled = await removeExperienceMediaIfEligible({
+            exp,
+            eligibleAt: getExperienceEndDate(exp),
+            mediaCutoff,
+            activeStatuses,
+            reason: "ended-with-bookings",
+          });
+          if (!mediaHandled) await exp.save();
           console.log("Cleanup: archived expired experience with bookings", { id: exp._id.toString(), bookingsCount });
         }
+      }
+
+      // Additional pass for already inactive archived experiences:
+      // this catches NO_BOOKINGS / CANCELLED entries that were not eligible
+      // at the moment they were archived.
+      const inactiveArchived = await Experience.find({
+        isActive: false,
+        status: { $in: ["NO_BOOKINGS", "CANCELLED", "cancelled"] },
+        $or: [{ mediaCleanedAt: { $exists: false } }, { mediaCleanedAt: null }],
+      }).select("status endsAt endDate startsAt startDate durationMinutes images videos mainImageUrl coverImageUrl mediaCleanedAt updatedAt");
+
+      for (const exp of inactiveArchived) {
+        const eligibleAt =
+          exp.status === "NO_BOOKINGS"
+            ? getExperienceEndDate(exp)
+            : exp.updatedAt || getExperienceEndDate(exp);
+        await removeExperienceMediaIfEligible({
+          exp,
+          eligibleAt,
+          mediaCutoff,
+          activeStatuses,
+          reason: `inactive-${String(exp.status || "").toLowerCase() || "unknown"}`,
+        });
       }
 
       const soldOut = await Experience.updateMany(

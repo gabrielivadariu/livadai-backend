@@ -14,6 +14,7 @@ const {
   formatExperienceDate,
   formatExperienceLocation,
 } = require("../utils/emailTemplates");
+const { deleteCloudinaryUrls } = require("../utils/cloudinary-media");
 
 const validateSchedule = (payload) => {
   if (!payload.startsAt) {
@@ -53,6 +54,14 @@ const validateSchedule = (payload) => {
   payload.endTime = end.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   return null;
 };
+
+const collectExperienceMediaUrls = (exp) =>
+  [
+    ...(exp?.images || []),
+    ...(exp?.videos || []),
+    exp?.mainImageUrl,
+    exp?.coverImageUrl,
+  ].filter(Boolean);
 
 const createExperience = async (req, res) => {
   try {
@@ -160,6 +169,8 @@ const updateExperience = async (req, res) => {
   try {
     const currentUser = await User.findById(req.user.id);
     if (currentUser?.isBanned) return res.status(403).json({ message: "Host banned" });
+    const existingExp = await Experience.findOne({ _id: req.params.id, host: req.user.id });
+    if (!existingExp) return res.status(404).json({ message: "Experience not found" });
     const update = { ...req.body };
     if (update.country || update.countryCode) {
       const codeRaw = update.countryCode || update.country;
@@ -212,8 +223,17 @@ const updateExperience = async (req, res) => {
       return res.status(400).json({ message: "Cannot change currency after bookings exist" });
     }
 
-    const exp = await Experience.findOneAndUpdate({ _id: req.params.id, host: req.user.id }, { $set: update }, { new: true });
+    const exp = await Experience.findByIdAndUpdate(existingExp._id, { $set: update }, { new: true });
     if (!exp) return res.status(404).json({ message: "Experience not found" });
+
+    const previousUrls = collectExperienceMediaUrls(existingExp);
+    const currentUrls = new Set(collectExperienceMediaUrls(exp));
+    const removedUrls = previousUrls.filter((url) => !currentUrls.has(url));
+    if (removedUrls.length) {
+      await deleteCloudinaryUrls(removedUrls, {
+        scope: "experience.update",
+      });
+    }
     return res.json(exp);
   } catch (err) {
     console.error("Update experience error", err);
@@ -231,7 +251,13 @@ const deleteExperience = async (req, res) => {
     const hasBookings = await Booking.findOne({ experience: exp._id });
 
     if (!hasBookings) {
+      const mediaUrls = collectExperienceMediaUrls(exp);
       await Experience.deleteOne({ _id: exp._id, host: req.user.id });
+      if (mediaUrls.length) {
+        await deleteCloudinaryUrls(mediaUrls, {
+          scope: "experience.delete",
+        });
+      }
       return res.json({ success: true, status: "deleted" });
     }
 
