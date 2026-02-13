@@ -15,6 +15,7 @@ const {
   formatExperienceLocation,
 } = require("../utils/emailTemplates");
 const { deleteCloudinaryUrls, getCloudinaryInfo, getTargetKey } = require("../utils/cloudinary-media");
+const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 
 const validateSchedule = (payload) => {
   if (!payload.startsAt) {
@@ -272,8 +273,16 @@ const updateExperience = async (req, res) => {
     const currentKeys = new Set(getExperienceMediaTargets(exp).map((target) => getTargetKey(target)));
     const removedTargets = previousTargets.filter((target) => !currentKeys.has(getTargetKey(target)));
     if (removedTargets.length) {
-      await deleteCloudinaryUrls(removedTargets, {
+      const deletedCount = await deleteCloudinaryUrls(removedTargets, {
         scope: "experience.update",
+      });
+      await logMediaDeletion({
+        scope: "experience.update",
+        requestedCount: removedTargets.length,
+        deletedCount,
+        entityType: "experience",
+        entityId: exp._id,
+        reason: "media-replaced",
       });
     }
     return res.json(exp);
@@ -296,8 +305,16 @@ const deleteExperience = async (req, res) => {
       const mediaTargets = getExperienceMediaTargets(exp);
       await Experience.deleteOne({ _id: exp._id, host: req.user.id });
       if (mediaTargets.length) {
-        await deleteCloudinaryUrls(mediaTargets, {
+        const deletedCount = await deleteCloudinaryUrls(mediaTargets, {
           scope: "experience.delete",
+        });
+        await logMediaDeletion({
+          scope: "experience.delete",
+          requestedCount: mediaTargets.length,
+          deletedCount,
+          entityType: "experience",
+          entityId: exp._id,
+          reason: "delete-without-bookings",
         });
       }
       return res.json({ success: true, status: "deleted" });

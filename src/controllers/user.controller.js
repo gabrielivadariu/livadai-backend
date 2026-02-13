@@ -12,6 +12,7 @@ const {
 } = require("../utils/emailTemplates");
 const { validatePasswordStrength } = require("../utils/passwordPolicy");
 const { deleteCloudinaryUrls, getCloudinaryInfo } = require("../utils/cloudinary-media");
+const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 
 const buildHistory = async (userId) => {
   const history = await Booking.find({ explorer: userId, status: "COMPLETED" })
@@ -124,8 +125,16 @@ const buildHistory = async (userId) => {
             resourceType: existingUser.avatarResourceType || "image",
           }
         : oldAvatar;
-      await deleteCloudinaryUrls([oldAvatarTarget], {
+      const deletedCount = await deleteCloudinaryUrls([oldAvatarTarget], {
         scope: "user.profile.avatar-replaced",
+      });
+      await logMediaDeletion({
+        scope: "user.profile.avatar-replaced",
+        requestedCount: 1,
+        deletedCount,
+        entityType: "user",
+        entityId: req.user.id,
+        reason: "avatar-replaced",
       });
     }
 

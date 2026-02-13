@@ -3,6 +3,7 @@ const Experience = require("../models/experience.model");
 const Booking = require("../models/booking.model");
 const Review = require("../models/review.model");
 const { deleteCloudinaryUrls, getCloudinaryInfo } = require("../utils/cloudinary-media");
+const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 
 const bookingStatusesForStats = new Set(["PAID", "COMPLETED", "DEPOSIT_PAID"]);
 
@@ -251,8 +252,16 @@ const updateMyProfile = async (req, res) => {
             resourceType: existingUser.avatarResourceType || "image",
           }
         : oldAvatar;
-      await deleteCloudinaryUrls([oldAvatarTarget], {
+      const deletedCount = await deleteCloudinaryUrls([oldAvatarTarget], {
         scope: "host.profile.avatar-replaced",
+      });
+      await logMediaDeletion({
+        scope: "host.profile.avatar-replaced",
+        requestedCount: 1,
+        deletedCount,
+        entityType: "host",
+        entityId: req.user.id,
+        reason: "avatar-replaced",
       });
     }
 

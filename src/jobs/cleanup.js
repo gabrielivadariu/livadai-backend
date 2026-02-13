@@ -1,6 +1,7 @@
 const Experience = require("../models/experience.model");
 const Booking = require("../models/booking.model");
 const { deleteCloudinaryUrls } = require("../utils/cloudinary-media");
+const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 
 const getExperienceEndDate = (exp) => {
   if (!exp) return null;
@@ -84,8 +85,17 @@ const removeExperienceMediaIfEligible = async ({
   });
   if (activeExists) return false;
 
-  await deleteCloudinaryUrls(getExperienceMediaTargets(exp), {
+  const targets = getExperienceMediaTargets(exp);
+  const deletedCount = await deleteCloudinaryUrls(targets, {
     scope: `cleanup:${reason || "unknown"}`,
+  });
+  await logMediaDeletion({
+    scope: `cleanup:${reason || "unknown"}`,
+    requestedCount: targets.length,
+    deletedCount,
+    entityType: "experience",
+    entityId: exp._id,
+    reason,
   });
   clearExperienceMedia(exp);
   await exp.save();

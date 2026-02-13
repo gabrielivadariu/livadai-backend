@@ -5,13 +5,60 @@ const Booking = require("../models/booking.model");
 const Experience = require("../models/experience.model");
 const Report = require("../models/report.model");
 const Payment = require("../models/payment.model");
+const MediaDeletionLog = require("../models/mediaDeletionLog.model");
 const stripe = require("../config/stripe");
 const { createNotification } = require("../controllers/notifications.controller");
 const { recalcTrustedParticipant } = require("../utils/trust");
 const { sendEmail } = require("../utils/mailer");
 const { buildBookingCancelledEmail } = require("../utils/emailTemplates");
+const { authenticate, authorize } = require("../middleware/auth.middleware");
 
 const router = Router();
+const cleanupActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "PENDING_ATTENDANCE", "DISPUTED"];
+
+const hasExperienceMedia = (exp) =>
+  !!(
+    (Array.isArray(exp?.mediaRefs) && exp.mediaRefs.length) ||
+    (Array.isArray(exp?.images) && exp.images.length) ||
+    (Array.isArray(exp?.videos) && exp.videos.length) ||
+    exp?.mainImageUrl ||
+    exp?.coverImageUrl
+  );
+
+const getExperienceEndDate = (exp) => {
+  if (!exp) return null;
+  const rawEnd = exp.endsAt || exp.endDate;
+  if (rawEnd) {
+    const endDate = new Date(rawEnd);
+    if (!Number.isNaN(endDate.getTime())) return endDate;
+  }
+  const rawStart = exp.startsAt || exp.startDate;
+  if (rawStart && exp.durationMinutes) {
+    const startDate = new Date(rawStart);
+    if (!Number.isNaN(startDate.getTime())) {
+      return new Date(startDate.getTime() + Number(exp.durationMinutes) * 60 * 1000);
+    }
+  }
+  if (rawStart) {
+    const startDate = new Date(rawStart);
+    if (!Number.isNaN(startDate.getTime())) {
+      return new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
+    }
+  }
+  return null;
+};
+
+const getCleanupEligibleAt = (exp) => {
+  if (!exp) return null;
+  if (String(exp.status || "").toUpperCase() === "NO_BOOKINGS") {
+    return getExperienceEndDate(exp);
+  }
+  if (String(exp.status || "").toUpperCase() === "CANCELLED") {
+    const updatedAt = exp.updatedAt ? new Date(exp.updatedAt) : null;
+    if (updatedAt && !Number.isNaN(updatedAt.getTime())) return updatedAt;
+  }
+  return getExperienceEndDate(exp);
+};
 
 const verifyToken = (token) => {
   const secret = process.env.ADMIN_ACTION_SECRET || "admin-secret";
@@ -335,6 +382,131 @@ router.get("/report-action", async (req, res) => {
 });
 
 router.post("/report-action", handleAction);
+
+router.get("/media/stats", authenticate, authorize(["ADMIN"]), async (_req, res) => {
+  try {
+    const now = new Date();
+    const retentionHours = Number(process.env.MEDIA_RETENTION_HOURS || 72);
+    const cutoff = new Date(now.getTime() - retentionHours * 60 * 60 * 1000);
+    const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    const experiences = await Experience.find({
+      $or: [
+        { "mediaRefs.0": { $exists: true } },
+        { "images.0": { $exists: true } },
+        { "videos.0": { $exists: true } },
+        { mainImageUrl: { $exists: true, $nin: ["", null] } },
+        { coverImageUrl: { $exists: true, $nin: ["", null] } },
+      ],
+    })
+      .select("isActive status endsAt endDate startsAt startDate durationMinutes updatedAt mediaRefs images videos mainImageUrl coverImageUrl mediaCleanedAt")
+      .lean();
+
+    const withMedia = experiences.filter((exp) => hasExperienceMedia(exp));
+    const activeWithMedia = withMedia.filter((exp) => exp.isActive !== false);
+    const inactiveWithMedia = withMedia.filter((exp) => exp.isActive === false);
+    const cleanedWithMedia = withMedia.filter((exp) => !!exp.mediaCleanedAt);
+    const pendingCleanup = withMedia.filter((exp) => !exp.mediaCleanedAt);
+
+    const cleanupCandidates = pendingCleanup.filter((exp) => {
+      const eligibleAt = getCleanupEligibleAt(exp);
+      return !!eligibleAt && eligibleAt <= cutoff;
+    });
+
+    let activeBookingSet = new Set();
+    if (cleanupCandidates.length) {
+      const candidateIds = cleanupCandidates.map((exp) => exp._id);
+      const activeBookingRows = await Booking.aggregate([
+        {
+          $match: {
+            experience: { $in: candidateIds },
+            status: { $in: cleanupActiveStatuses },
+          },
+        },
+        { $group: { _id: "$experience" } },
+      ]);
+      activeBookingSet = new Set(activeBookingRows.map((row) => String(row._id)));
+    }
+
+    const orphanCandidates = cleanupCandidates.filter((exp) => !activeBookingSet.has(String(exp._id)));
+    const blockedByActiveBookings = cleanupCandidates.length - orphanCandidates.length;
+
+    const usersWithAvatar = await User.countDocuments({
+      $or: [
+        { avatarPublicId: { $exists: true, $nin: ["", null] } },
+        { avatar: { $exists: true, $nin: ["", null] } },
+      ],
+    });
+
+    const [deleted24hRows, deleted24hByScope] = await Promise.all([
+      MediaDeletionLog.aggregate([
+        { $match: { createdAt: { $gte: since24h } } },
+        {
+          $group: {
+            _id: null,
+            events: { $sum: 1 },
+            requestedCount: { $sum: "$requestedCount" },
+            deletedCount: { $sum: "$deletedCount" },
+          },
+        },
+      ]),
+      MediaDeletionLog.aggregate([
+        { $match: { createdAt: { $gte: since24h } } },
+        {
+          $group: {
+            _id: "$scope",
+            events: { $sum: 1 },
+            deletedCount: { $sum: "$deletedCount" },
+          },
+        },
+        { $sort: { deletedCount: -1, events: -1 } },
+      ]),
+    ]);
+
+    const deleted24h = deleted24hRows[0] || {
+      events: 0,
+      requestedCount: 0,
+      deletedCount: 0,
+    };
+
+    return res.json({
+      generatedAt: now.toISOString(),
+      retentionHours,
+      cutoff: cutoff.toISOString(),
+      summary: {
+        experiencesWithMedia: withMedia.length,
+        activeExperiencesWithMedia: activeWithMedia.length,
+        inactiveExperiencesWithMedia: inactiveWithMedia.length,
+        cleanedExperiencesWithMedia: cleanedWithMedia.length,
+        pendingCleanupExperiences: pendingCleanup.length,
+        cleanupCandidates: cleanupCandidates.length,
+        orphanCandidates: orphanCandidates.length,
+        blockedByActiveBookings,
+        usersWithAvatar,
+      },
+      deletedLast24h: {
+        events: deleted24h.events || 0,
+        requestedCount: deleted24h.requestedCount || 0,
+        deletedCount: deleted24h.deletedCount || 0,
+      },
+      deletedLast24hByScope: deleted24hByScope.map((row) => ({
+        scope: row._id || "unknown",
+        events: row.events || 0,
+        deletedCount: row.deletedCount || 0,
+      })),
+      orphanCandidateSample: orphanCandidates.slice(0, 20).map((exp) => ({
+        id: String(exp._id),
+        status: exp.status,
+        isActive: exp.isActive,
+        eligibleAt: getCleanupEligibleAt(exp)?.toISOString?.() || null,
+        updatedAt: exp.updatedAt?.toISOString?.() || null,
+      })),
+    });
+  } catch (err) {
+    console.error("Admin media stats error", err);
+    return res.status(500).json({ message: "Failed to build media stats" });
+  }
+});
 
 // simple preview page for reports (token-protected)
 router.get("/report/:id/preview", async (req, res) => {
