@@ -11,8 +11,8 @@ const {
 
 const router = Router();
 
-router.get("/:id/profile", optionalAuthenticate, getHostProfile);
 router.get("/me/profile", authenticate, authorize(["HOST"]), getMyHostProfile);
+router.get("/:id/profile", optionalAuthenticate, getHostProfile);
 router.get("/:id/reviews", getHostReviews);
 router.get("/:id/activities", getHostActivities);
 router.put("/me/profile", authenticate, authorize(["HOST"]), updateMyProfile);

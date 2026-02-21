@@ -2,6 +2,9 @@ const stripe = require("../config/stripe");
 const Payment = require("../models/payment.model");
 const { handlePaymentSuccess } = require("../controllers/payment.controller");
 
+const stripeKey = process.env.STRIPE_SECRET_KEY || "";
+const isLiveStripeKey = stripeKey.startsWith("sk_live_");
+
 const setupReconcilePaymentsJob = () => {
   const run = async () => {
     try {
@@ -14,7 +17,19 @@ const setupReconcilePaymentsJob = () => {
 
       for (const payment of pendingPayments) {
         try {
-          const session = await stripe.checkout.sessions.retrieve(payment.stripeSessionId);
+          const sessionId = payment.stripeSessionId || "";
+          if (isLiveStripeKey && sessionId.startsWith("cs_test_")) {
+            // Prevent infinite retries for old test sessions left in production DB.
+            payment.status = "FAILED";
+            await payment.save();
+            console.warn("Reconcile skipped test session in live mode", {
+              paymentId: payment._id?.toString(),
+              sessionId,
+            });
+            continue;
+          }
+
+          const session = await stripe.checkout.sessions.retrieve(sessionId);
           if (session?.payment_status === "paid") {
             await handlePaymentSuccess({
               bookingId: payment.booking?.toString(),
@@ -24,11 +39,23 @@ const setupReconcilePaymentsJob = () => {
             });
           }
         } catch (err) {
-          console.error("Reconcile payment session error", {
-            paymentId: payment._id?.toString(),
-            sessionId: payment.stripeSessionId,
-            message: err?.message || err,
-          });
+          const message = err?.message || "";
+          const isMissingSession = err?.code === "resource_missing" || message.includes("No such checkout.session");
+          if (isMissingSession) {
+            payment.status = "FAILED";
+            await payment.save();
+            console.warn("Reconcile payment session missing; marked FAILED", {
+              paymentId: payment._id?.toString(),
+              sessionId: payment.stripeSessionId,
+              message,
+            });
+          } else {
+            console.error("Reconcile payment session error", {
+              paymentId: payment._id?.toString(),
+              sessionId: payment.stripeSessionId,
+              message: err?.message || err,
+            });
+          }
         }
       }
     } catch (err) {

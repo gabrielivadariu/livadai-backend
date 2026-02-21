@@ -2,6 +2,7 @@ const User = require("../models/user.model");
 const Experience = require("../models/experience.model");
 const Booking = require("../models/booking.model");
 const Review = require("../models/review.model");
+const { Types } = require("mongoose");
 const { deleteCloudinaryUrls, getCloudinaryInfo } = require("../utils/cloudinary-media");
 const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 
@@ -25,7 +26,13 @@ const computeHostStats = async (hostId) => {
 const getHostProfile = async (req, res) => {
   try {
     let { id } = req.params;
-    if (id === "me" && req.user?.id) id = req.user.id;
+    if (id === "me") {
+      if (!req.user?.id) return res.status(401).json({ message: "Authentication required" });
+      id = req.user.id;
+    }
+    if (!Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid host id" });
+    }
     const user = await User.findById(id).select(
       "name displayName display_name role city country languages about_me age avatar phone rating_avg rating_count total_participants total_events experience"
     );
