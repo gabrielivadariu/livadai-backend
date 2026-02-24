@@ -74,12 +74,28 @@ Fields (MVP):
   - body: `reason` (required)
   - manual Stripe refund for refundable bookings
 
+### Reports / Moderation
+
+- `GET /admin/reports?q=&status=&type=&assigned=&from=&to=&page=&limit=`
+  - `status=OPEN_INBOX` => `OPEN + INVESTIGATING`
+  - `assigned=me|unassigned|all`
+- `POST /admin/reports/:id/action`
+  - body: `action`, optional `reason`, optional `note`
+  - actions:
+    - `ASSIGN_TO_ME`
+    - `UNASSIGN`
+    - `MARK_OPEN`
+    - `MARK_INVESTIGATING`
+    - `MARK_HANDLED`
+    - `MARK_IGNORED`
+    - `PAUSE_EXPERIENCE` (reason required)
+    - `SUSPEND_USER` (reason required)
+
 ### Media Ops
 
 - `GET /admin/media/stats`
 
 ## Next planned tabs
 
-- `/admin/reports`
 - `/admin/payments`
 - audit log full table + filters

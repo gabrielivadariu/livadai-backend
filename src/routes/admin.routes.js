@@ -234,6 +234,75 @@ const serializeAdminBooking = (booking, extras = {}) => ({
   messagesCount: Number(extras.messagesCount || 0),
 });
 
+const serializeAdminReport = (report, extras = {}) => {
+  const createdAt = report.createdAt ? new Date(report.createdAt) : null;
+  const deadlineAt = report.deadlineAt ? new Date(report.deadlineAt) : null;
+  const now = extras.now instanceof Date ? extras.now : new Date();
+  const ageHours = createdAt ? Math.max(0, Math.floor((now.getTime() - createdAt.getTime()) / (60 * 60 * 1000))) : 0;
+  const overdue = !!deadlineAt && deadlineAt.getTime() < now.getTime() && ["OPEN", "INVESTIGATING"].includes(String(report.status || ""));
+  const booking = report.booking && typeof report.booking === "object" ? report.booking : null;
+  const experience = report.experience && typeof report.experience === "object" ? report.experience : null;
+  return {
+    id: String(report._id),
+    type: report.type || "",
+    status: report.status || "",
+    reason: report.reason || "",
+    comment: report.comment || "",
+    affectsPayout: !!report.affectsPayout,
+    actionTaken: report.actionTaken || "",
+    createdAt: report.createdAt || null,
+    deadlineAt: report.deadlineAt || null,
+    handledAt: report.handledAt || null,
+    handledBy: report.handledBy || "",
+    assignedTo: report.assignedTo || "",
+    assignedAt: report.assignedAt || null,
+    ageHours,
+    overdue,
+    targetType: report.targetType || null,
+    reporter: report.reporter
+      ? {
+          id: String(report.reporter._id || report.reporter),
+          name: report.reporter.displayName || report.reporter.display_name || report.reporter.name || "",
+          email: report.reporter.email || "",
+        }
+      : null,
+    host: report.host
+      ? {
+          id: String(report.host._id || report.host),
+          name: report.host.displayName || report.host.display_name || report.host.name || "",
+          email: report.host.email || "",
+        }
+      : null,
+    targetUser: report.targetUserId
+      ? {
+          id: String(report.targetUserId._id || report.targetUserId),
+          name: report.targetUserId.displayName || report.targetUserId.display_name || report.targetUserId.name || "",
+          email: report.targetUserId.email || "",
+          isBlocked: !!report.targetUserId.isBlocked,
+          isBanned: !!report.targetUserId.isBanned,
+        }
+      : null,
+    experience: experience
+      ? {
+          id: String(experience._id || experience),
+          title: experience.title || "",
+          status: experience.status || "",
+          isActive: experience.isActive !== false,
+          city: experience.city || "",
+          country: experience.country || "",
+        }
+      : null,
+    booking: booking
+      ? {
+          id: String(booking._id || booking),
+          status: booking.status || "",
+          quantity: Number(booking.quantity || 1),
+        }
+      : null,
+    messagesCount: Number(extras.messagesCount || 0),
+  };
+};
+
 const restoreExperienceSpotsForCancelledBooking = async (booking, expDoc) => {
   if (!expDoc) return;
   const qty = Number(booking.quantity || 1);
@@ -600,7 +669,7 @@ router.get("/dashboard", async (_req, res) => {
       Booking.countDocuments({ status: { $in: adminBookingActiveStatuses } }),
       Booking.countDocuments({ status: "REFUND_FAILED" }),
       Report.countDocuments({ status: "OPEN" }),
-      Report.countDocuments({ status: { $in: ["OPEN", "HANDLED"] } }),
+      Report.countDocuments({ status: { $in: ["OPEN", "INVESTIGATING", "HANDLED"] } }),
       User.countDocuments({ createdAt: { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) } }),
       Experience.countDocuments({ createdAt: { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) } }),
     ]);
@@ -1320,6 +1389,273 @@ router.post("/bookings/:id/refund", async (req, res) => {
   } catch (err) {
     console.error("Admin booking refund error", err);
     return res.status(500).json({ message: err?.message || "Failed to refund booking" });
+  }
+});
+
+router.get("/reports", async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const status = String(req.query.status || "").trim().toUpperCase();
+    const type = String(req.query.type || "").trim().toUpperCase();
+    const assigned = String(req.query.assigned || "").trim().toLowerCase(); // me | unassigned | any
+    const from = String(req.query.from || "").trim();
+    const to = String(req.query.to || "").trim();
+    const limit = clampLimit(req.query.limit, 20, 100);
+    const page = Math.max(1, Number(req.query.page || 1) || 1);
+    const skip = (page - 1) * limit;
+
+    const filter = {};
+    if (status && status !== "ALL") {
+      if (status === "OPEN_INBOX") {
+        filter.status = { $in: ["OPEN", "INVESTIGATING"] };
+      } else {
+        filter.status = status;
+      }
+    }
+    if (type && type !== "ALL") filter.type = type;
+    if (assigned === "me" && req.user?.email) filter.assignedTo = req.user.email;
+    if (assigned === "unassigned") filter.assignedTo = { $in: [null, ""] };
+
+    const createdAt = {};
+    if (from) {
+      const d = new Date(from);
+      if (!Number.isNaN(d.getTime())) createdAt.$gte = d;
+    }
+    if (to) {
+      const d = new Date(to);
+      if (!Number.isNaN(d.getTime())) createdAt.$lte = new Date(d.getTime() + 24 * 60 * 60 * 1000 - 1);
+    }
+    if (Object.keys(createdAt).length) filter.createdAt = createdAt;
+
+    if (q) {
+      const or = [];
+      if (isObjectIdLike(q)) {
+        or.push({ _id: q }, { booking: q }, { experience: q }, { host: q }, { reporter: q }, { targetUserId: q });
+      }
+      const safe = escapeRegex(q);
+      or.push(
+        { reason: { $regex: safe, $options: "i" } },
+        { comment: { $regex: safe, $options: "i" } },
+        { actionTaken: { $regex: safe, $options: "i" } }
+      );
+      const [userMatches, expMatches] = await Promise.all([
+        User.find({
+          $or: [
+            { name: { $regex: safe, $options: "i" } },
+            { displayName: { $regex: safe, $options: "i" } },
+            { display_name: { $regex: safe, $options: "i" } },
+            { email: { $regex: safe, $options: "i" } },
+          ],
+        })
+          .select("_id")
+          .limit(50)
+          .lean(),
+        Experience.find({
+          $or: [{ title: { $regex: safe, $options: "i" } }, { city: { $regex: safe, $options: "i" } }],
+        })
+          .select("_id")
+          .limit(50)
+          .lean(),
+      ]);
+      const userIds = userMatches.map((r) => r._id);
+      const expIds = expMatches.map((r) => r._id);
+      if (userIds.length) {
+        or.push({ reporter: { $in: userIds } }, { host: { $in: userIds } }, { targetUserId: { $in: userIds } });
+      }
+      if (expIds.length) or.push({ experience: { $in: expIds } });
+      filter.$or = or;
+    }
+
+    const [total, rows] = await Promise.all([
+      Report.countDocuments(filter),
+      Report.find(filter)
+        .populate("experience", "title status isActive city country")
+        .populate("booking", "status quantity")
+        .populate("host", "name displayName display_name email")
+        .populate("reporter", "name displayName display_name email")
+        .populate("targetUserId", "name displayName display_name email isBlocked isBanned")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    const bookingIds = rows.map((r) => r.booking?._id || r.booking).filter(Boolean);
+    const messagesAgg = bookingIds.length
+      ? await Message.aggregate([{ $match: { booking: { $in: bookingIds } } }, { $group: { _id: "$booking", count: { $sum: 1 } } }])
+      : [];
+    const msgCountByBooking = new Map(messagesAgg.map((row) => [String(row._id), Number(row.count || 0)]));
+    const now = new Date();
+
+    return res.json({
+      page,
+      limit,
+      total,
+      pages: Math.max(1, Math.ceil(total / limit)),
+      items: rows.map((row) =>
+        serializeAdminReport(row, {
+          now,
+          messagesCount: row.booking ? msgCountByBooking.get(String(row.booking._id || row.booking)) || 0 : 0,
+        })
+      ),
+    });
+  } catch (err) {
+    console.error("Admin reports list error", err);
+    return res.status(500).json({ message: "Failed to load reports" });
+  }
+});
+
+router.post("/reports/:id/action", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isObjectIdLike(id)) return res.status(400).json({ message: "Invalid report id" });
+
+    const action = String(req.body?.action || "").trim().toUpperCase();
+    const reason = String(req.adminReason || req.body?.reason || "").trim();
+    const note = String(req.body?.note || "").trim();
+    const allowedActions = [
+      "ASSIGN_TO_ME",
+      "UNASSIGN",
+      "MARK_OPEN",
+      "MARK_INVESTIGATING",
+      "MARK_HANDLED",
+      "MARK_IGNORED",
+      "PAUSE_EXPERIENCE",
+      "SUSPEND_USER",
+    ];
+    if (!allowedActions.includes(action)) {
+      return res.status(400).json({ message: "Invalid action" });
+    }
+    if (["PAUSE_EXPERIENCE", "SUSPEND_USER"].includes(action) && !reason) {
+      return res.status(400).json({ message: "Reason is required" });
+    }
+
+    const report = await Report.findById(id)
+      .populate("experience", "title isActive status")
+      .populate("targetUserId", "email isBlocked isBanned")
+      .populate("host", "email isBlocked isBanned")
+      .populate("reporter", "email isBlocked isBanned");
+    if (!report) return res.status(404).json({ message: "Report not found" });
+
+    const before = {
+      status: report.status,
+      assignedTo: report.assignedTo || null,
+      assignedAt: report.assignedAt || null,
+      handledAt: report.handledAt || null,
+      handledBy: report.handledBy || null,
+      actionTaken: report.actionTaken || null,
+    };
+
+    let targetMutation = null;
+    const now = new Date();
+
+    switch (action) {
+      case "ASSIGN_TO_ME":
+        report.assignedTo = req.user.email;
+        report.assignedAt = now;
+        if (report.status === "OPEN") report.status = "INVESTIGATING";
+        break;
+      case "UNASSIGN":
+        report.assignedTo = "";
+        report.assignedAt = null;
+        break;
+      case "MARK_OPEN":
+        report.status = "OPEN";
+        report.handledAt = null;
+        report.handledBy = "";
+        break;
+      case "MARK_INVESTIGATING":
+        report.status = "INVESTIGATING";
+        report.assignedTo = report.assignedTo || req.user.email;
+        report.assignedAt = report.assignedAt || now;
+        break;
+      case "MARK_HANDLED":
+        report.status = "HANDLED";
+        report.handledAt = now;
+        report.handledBy = req.user.email;
+        break;
+      case "MARK_IGNORED":
+        report.status = "IGNORED";
+        report.handledAt = now;
+        report.handledBy = req.user.email;
+        break;
+      case "PAUSE_EXPERIENCE": {
+        if (!report.experience?._id) return res.status(400).json({ message: "Report has no linked experience" });
+        const exp = await Experience.findById(report.experience._id);
+        if (!exp) return res.status(404).json({ message: "Experience not found" });
+        const expBefore = { isActive: exp.isActive, status: exp.status };
+        exp.isActive = false;
+        if (!["CANCELLED", "cancelled"].includes(String(exp.status || ""))) {
+          exp.status = "DISABLED";
+        }
+        await exp.save();
+        report.status = "INVESTIGATING";
+        report.actionTaken = "PAUSE_EXPERIENCE";
+        targetMutation = {
+          targetType: "experience",
+          targetId: String(exp._id),
+          before: expBefore,
+          after: { isActive: exp.isActive, status: exp.status },
+        };
+        break;
+      }
+      case "SUSPEND_USER": {
+        const userDoc =
+          (report.targetUserId?._id && (await User.findById(report.targetUserId._id))) ||
+          (report.host?._id && (await User.findById(report.host._id))) ||
+          (report.reporter?._id && (await User.findById(report.reporter._id)));
+        if (!userDoc) return res.status(400).json({ message: "No linked user to suspend" });
+        const userBefore = { isBlocked: !!userDoc.isBlocked, isBanned: !!userDoc.isBanned };
+        userDoc.isBlocked = true;
+        await userDoc.save();
+        report.status = "INVESTIGATING";
+        report.actionTaken = "SUSPEND_USER";
+        targetMutation = {
+          targetType: "user",
+          targetId: String(userDoc._id),
+          before: userBefore,
+          after: { isBlocked: !!userDoc.isBlocked, isBanned: !!userDoc.isBanned },
+        };
+        break;
+      }
+      default:
+        break;
+    }
+
+    if (note) {
+      report.actionTaken = [report.actionTaken, note].filter(Boolean).join(" | ");
+    } else if (["MARK_HANDLED", "MARK_IGNORED", "MARK_INVESTIGATING", "MARK_OPEN"].includes(action)) {
+      report.actionTaken = action;
+    }
+
+    await report.save();
+
+    await writeAdminAuditLog(req, {
+      actionType: `REPORT_${action}`,
+      targetType: "report",
+      targetId: String(report._id),
+      reason: reason || undefined,
+      diff: {
+        before,
+        after: {
+          status: report.status,
+          assignedTo: report.assignedTo || null,
+          assignedAt: report.assignedAt || null,
+          handledAt: report.handledAt || null,
+          handledBy: report.handledBy || null,
+          actionTaken: report.actionTaken || null,
+        },
+      },
+      meta: targetMutation || undefined,
+    });
+
+    return res.json({
+      message: "Report action applied",
+      report: serializeAdminReport(report.toObject ? report.toObject() : report, { now: new Date() }),
+    });
+  } catch (err) {
+    console.error("Admin report action error", err);
+    return res.status(500).json({ message: "Failed to apply report action" });
   }
 });
 
