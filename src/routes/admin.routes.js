@@ -1,5 +1,6 @@
 const { Router } = require("express");
 const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
 const User = require("../models/user.model");
 const Booking = require("../models/booking.model");
 const Experience = require("../models/experience.model");
@@ -2047,6 +2048,96 @@ router.get("/payments/health", async (_req, res) => {
   } catch (err) {
     console.error("Admin payments health error", err);
     return res.status(500).json({ message: "Failed to load payments health" });
+  }
+});
+
+router.get("/system/health", async (_req, res) => {
+  try {
+    const now = new Date();
+    const readyStateMap = {
+      0: "disconnected",
+      1: "connected",
+      2: "connecting",
+      3: "disconnecting",
+    };
+
+    const adminAllowlist = String(process.env.ADMIN_ALLOWED_EMAILS || "")
+      .split(",")
+      .map((x) => x.trim().toLowerCase())
+      .filter(Boolean);
+
+    const [openReports, investigatingReports, refundFailedBookings, disputedPayments, staleInitiatedPayments, recentAuditActions] =
+      await Promise.all([
+        Report.countDocuments({ status: "OPEN" }),
+        Report.countDocuments({ status: "INVESTIGATING" }),
+        Booking.countDocuments({ status: "REFUND_FAILED" }),
+        Payment.countDocuments({ status: { $in: ["DISPUTED", "DISPUTE_LOST"] } }),
+        Payment.countDocuments({
+          status: "INITIATED",
+          createdAt: { $lte: new Date(now.getTime() - 30 * 60 * 1000) },
+        }),
+        AdminAuditLog.countDocuments({
+          createdAt: { $gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) },
+        }),
+      ]);
+
+    const webOrigins = String(process.env.ALLOWED_WEB_ORIGINS || "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+
+    return res.json({
+      generatedAt: now.toISOString(),
+      runtime: {
+        nodeVersion: process.version,
+        env: process.env.NODE_ENV || "development",
+        uptimeSeconds: Math.floor(process.uptime()),
+        pid: process.pid,
+      },
+      database: {
+        state: readyStateMap[mongoose.connection.readyState] || "unknown",
+        name: mongoose.connection.name || null,
+        host: mongoose.connection.host || null,
+      },
+      security: {
+        adminAllowlistConfigured: adminAllowlist.length > 0,
+        adminAllowlistCount: adminAllowlist.length,
+        adminRateLimitWindowMs: ADMIN_RATE_LIMIT_WINDOW_MS,
+        adminRateLimitMax: ADMIN_RATE_LIMIT_MAX,
+        jwtSecretConfigured: !!process.env.JWT_SECRET,
+        adminActionSecretConfigured: !!process.env.ADMIN_ACTION_SECRET,
+        cookieSecretConfigured: !!process.env.COOKIE_SECRET,
+      },
+      integrations: {
+        stripeSecretConfigured: !!process.env.STRIPE_SECRET_KEY,
+        stripeWebhookSecretConfigured: !!process.env.STRIPE_WEBHOOK_SECRET,
+        cloudinaryConfigured:
+          !!process.env.CLOUDINARY_CLOUD_NAME &&
+          !!process.env.CLOUDINARY_API_KEY &&
+          !!process.env.CLOUDINARY_API_SECRET,
+        resendConfigured: !!process.env.RESEND_API_KEY,
+        smtpConfigured:
+          !!process.env.SMTP_HOST &&
+          !!process.env.SMTP_USER &&
+          !!process.env.SMTP_PASS,
+        reportsEmailConfigured: !!process.env.REPORTS_EMAIL,
+      },
+      web: {
+        allowedWebOriginsCount: webOrigins.length,
+        allowedWebOrigins: webOrigins.slice(0, 20),
+      },
+      opsAttention: {
+        openReports,
+        investigatingReports,
+        refundFailedBookings,
+        disputedPayments,
+        staleInitiatedPayments,
+        adminActionsLast24h: recentAuditActions,
+      },
+    });
+  } catch (err) {
+    console.error("Admin system health error", err);
+    return res.status(500).json({ message: "Failed to load system health" });
   }
 });
 

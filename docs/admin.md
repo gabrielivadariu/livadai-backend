@@ -107,6 +107,16 @@ Fields (MVP):
     - `payoutAttentionBookings`
     - `disputedPayments`
 
+### System
+
+- `GET /admin/system/health`
+  - runtime info (node/env/uptime)
+  - Mongo connection state/name/host
+  - security config flags (`ADMIN_ALLOWED_EMAILS`, secrets, admin rate limit)
+  - integrations config flags (Stripe, Cloudinary, Resend, SMTP)
+  - web config (`ALLOWED_WEB_ORIGINS`)
+  - ops attention counters (reports/refunds/disputes/stale payments/audit activity)
+
 ### Media Ops
 
 - `GET /admin/media/stats`
@@ -114,4 +124,3 @@ Fields (MVP):
 ## Next planned tabs
 
 - `/admin/messages`
-- `/admin/system`
