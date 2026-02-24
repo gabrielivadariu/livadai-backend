@@ -5,6 +5,7 @@ const Booking = require("../models/booking.model");
 const Experience = require("../models/experience.model");
 const Report = require("../models/report.model");
 const Payment = require("../models/payment.model");
+const Message = require("../models/message.model");
 const MediaDeletionLog = require("../models/mediaDeletionLog.model");
 const AdminAuditLog = require("../models/adminAuditLog.model");
 const stripe = require("../config/stripe");
@@ -19,6 +20,8 @@ const cleanupActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "
 const adminBookingActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "DISPUTED"];
 const adminParticipantStatuses = ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "COMPLETED", "AUTO_COMPLETED"];
 const allowedUserRoles = ["EXPLORER", "HOST", "ADMIN", "BOTH"];
+const adminBookingPaidStatuses = ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "DISPUTED"];
+const adminBookingFinalStatuses = ["CANCELLED", "REFUNDED", "COMPLETED", "AUTO_COMPLETED", "NO_SHOW"];
 const adminRateLimitState = new Map();
 const ADMIN_RATE_LIMIT_WINDOW_MS = Number(process.env.ADMIN_RATE_LIMIT_WINDOW_MS || 60_000);
 const ADMIN_RATE_LIMIT_MAX = Number(process.env.ADMIN_RATE_LIMIT_MAX || 240);
@@ -182,6 +185,64 @@ const serializeAdminExperience = (exp, participantsByExperience = new Map()) => 
     : null,
   participantsBooked: participantsByExperience.get(String(exp._id)) || 0,
 });
+
+const isObjectIdLike = (value) => /^[a-f\d]{24}$/i.test(String(value || ""));
+
+const serializeAdminBooking = (booking, extras = {}) => ({
+  id: String(booking._id),
+  status: booking.status || "",
+  attendanceStatus: booking.attendanceStatus || "",
+  quantity: Number(booking.quantity || 1),
+  amount: Number(booking.amount || 0),
+  currency: booking.currency || "ron",
+  payoutEligibleAt: booking.payoutEligibleAt || null,
+  createdAt: booking.createdAt,
+  updatedAt: booking.updatedAt,
+  cancelledAt: booking.cancelledAt || null,
+  refundedAt: booking.refundedAt || null,
+  disputeReason: booking.disputeReason || null,
+  date: booking.date || null,
+  host: booking.host
+    ? {
+        id: String(booking.host._id || booking.host),
+        name: booking.host.displayName || booking.host.display_name || booking.host.name || "",
+        email: booking.host.email || "",
+      }
+    : null,
+  explorer: booking.explorer
+    ? {
+        id: String(booking.explorer._id || booking.explorer),
+        name: booking.explorer.displayName || booking.explorer.display_name || booking.explorer.name || "",
+        email: booking.explorer.email || "",
+      }
+    : null,
+  experience: booking.experience
+    ? {
+        id: String(booking.experience._id || booking.experience),
+        title: booking.experience.title || "",
+        startsAt: booking.experience.startsAt || booking.experience.startDate || null,
+        endsAt: booking.experience.endsAt || booking.experience.endDate || null,
+        city: booking.experience.city || "",
+        country: booking.experience.country || "",
+        price: typeof booking.experience.price === "number" ? booking.experience.price : 0,
+        isActive: booking.experience.isActive !== false,
+        status: booking.experience.status || "",
+      }
+    : null,
+  payment: extras.payment || null,
+  reportsCount: Number(extras.reportsCount || 0),
+  messagesCount: Number(extras.messagesCount || 0),
+});
+
+const restoreExperienceSpotsForCancelledBooking = async (booking, expDoc) => {
+  if (!expDoc) return;
+  const qty = Number(booking.quantity || 1);
+  const total = Number(expDoc.maxParticipants || qty);
+  const currentRemaining = Number.isFinite(expDoc.remainingSpots) ? Number(expDoc.remainingSpots) : Math.max(0, total - qty);
+  expDoc.remainingSpots = Math.min(total, currentRemaining + qty);
+  if (expDoc.remainingSpots > 0) expDoc.soldOut = false;
+  await expDoc.save();
+};
 
 const refundBooking = async (booking, reason = "Admin action") => {
   try {
@@ -886,6 +947,379 @@ router.patch("/experiences/:id", async (req, res) => {
   } catch (err) {
     console.error("Admin experience update error", err);
     return res.status(500).json({ message: "Failed to update experience" });
+  }
+});
+
+router.get("/bookings", async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const status = String(req.query.status || "").trim();
+    const hostId = String(req.query.hostId || "").trim();
+    const explorerId = String(req.query.explorerId || "").trim();
+    const experienceId = String(req.query.experienceId || "").trim();
+    const paid = parseBoolFilter(req.query.paid);
+    const from = String(req.query.from || "").trim();
+    const to = String(req.query.to || "").trim();
+    const limit = clampLimit(req.query.limit, 20, 100);
+    const page = Math.max(1, Number(req.query.page || 1) || 1);
+    const skip = (page - 1) * limit;
+
+    const filter = {};
+
+    if (status && status !== "all") filter.status = status;
+    if (isObjectIdLike(hostId)) filter.host = hostId;
+    if (isObjectIdLike(explorerId)) filter.explorer = explorerId;
+    if (isObjectIdLike(experienceId)) filter.experience = experienceId;
+
+    if (typeof paid === "boolean") {
+      filter.status = paid ? { $in: adminBookingPaidStatuses } : { $nin: adminBookingPaidStatuses };
+      if (status && status !== "all") {
+        filter.status = status;
+      }
+    }
+
+    const createdAt = {};
+    if (from) {
+      const fromDate = new Date(from);
+      if (!Number.isNaN(fromDate.getTime())) createdAt.$gte = fromDate;
+    }
+    if (to) {
+      const toDate = new Date(to);
+      if (!Number.isNaN(toDate.getTime())) createdAt.$lte = new Date(toDate.getTime() + 24 * 60 * 60 * 1000 - 1);
+    }
+    if (Object.keys(createdAt).length) filter.createdAt = createdAt;
+
+    if (q) {
+      const or = [];
+      if (isObjectIdLike(q)) {
+        or.push({ _id: q });
+      }
+      const safe = escapeRegex(q);
+      const [userMatches, expMatches] = await Promise.all([
+        User.find({
+          $or: [
+            { name: { $regex: safe, $options: "i" } },
+            { displayName: { $regex: safe, $options: "i" } },
+            { display_name: { $regex: safe, $options: "i" } },
+            { email: { $regex: safe, $options: "i" } },
+          ],
+        })
+          .select("_id")
+          .limit(50)
+          .lean(),
+        Experience.find({
+          $or: [
+            { title: { $regex: safe, $options: "i" } },
+            { city: { $regex: safe, $options: "i" } },
+            { country: { $regex: safe, $options: "i" } },
+          ],
+        })
+          .select("_id")
+          .limit(50)
+          .lean(),
+      ]);
+      const userIds = userMatches.map((row) => row._id);
+      const expIds = expMatches.map((row) => row._id);
+      if (userIds.length) {
+        or.push({ explorer: { $in: userIds } });
+        or.push({ host: { $in: userIds } });
+      }
+      if (expIds.length) {
+        or.push({ experience: { $in: expIds } });
+      }
+      if (or.length) {
+        filter.$or = or;
+      } else if (!isObjectIdLike(q)) {
+        return res.json({ page, limit, total: 0, pages: 1, items: [] });
+      }
+    }
+
+    const [total, rows] = await Promise.all([
+      Booking.countDocuments(filter),
+      Booking.find(filter)
+        .populate("host", "name displayName display_name email")
+        .populate("explorer", "name displayName display_name email")
+        .populate("experience", "title startsAt endsAt startDate endDate city country price isActive status")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    const bookingIds = rows.map((row) => row._id);
+    const [payments, reportsAgg, messagesAgg] = bookingIds.length
+      ? await Promise.all([
+          Payment.find({ booking: { $in: bookingIds } })
+            .select("booking status paymentType amount totalAmount currency stripePaymentIntentId stripeSessionId")
+            .sort({ createdAt: -1 })
+            .lean(),
+          Report.aggregate([
+            { $match: { booking: { $in: bookingIds } } },
+            { $group: { _id: "$booking", count: { $sum: 1 } } },
+          ]),
+          Message.aggregate([
+            { $match: { booking: { $in: bookingIds } } },
+            { $group: { _id: "$booking", count: { $sum: 1 } } },
+          ]),
+        ])
+      : [[], [], []];
+
+    const paymentByBooking = new Map();
+    for (const p of payments) {
+      const key = String(p.booking);
+      if (!paymentByBooking.has(key)) {
+        paymentByBooking.set(key, {
+          status: p.status || "",
+          paymentType: p.paymentType || "",
+          amount: Number(p.totalAmount || p.amount || 0),
+          currency: p.currency || "ron",
+          hasStripePaymentIntent: !!p.stripePaymentIntentId,
+          stripeSessionId: p.stripeSessionId || null,
+        });
+      }
+    }
+    const reportsCountByBooking = new Map(reportsAgg.map((row) => [String(row._id), Number(row.count || 0)]));
+    const messagesCountByBooking = new Map(messagesAgg.map((row) => [String(row._id), Number(row.count || 0)]));
+
+    return res.json({
+      page,
+      limit,
+      total,
+      pages: Math.max(1, Math.ceil(total / limit)),
+      items: rows.map((row) =>
+        serializeAdminBooking(row, {
+          payment: paymentByBooking.get(String(row._id)) || null,
+          reportsCount: reportsCountByBooking.get(String(row._id)) || 0,
+          messagesCount: messagesCountByBooking.get(String(row._id)) || 0,
+        })
+      ),
+    });
+  } catch (err) {
+    console.error("Admin bookings list error", err);
+    return res.status(500).json({ message: "Failed to load bookings" });
+  }
+});
+
+router.get("/bookings/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isObjectIdLike(id)) {
+      return res.status(400).json({ message: "Invalid booking id" });
+    }
+
+    const booking = await Booking.findById(id)
+      .populate("host", "name displayName display_name email city country")
+      .populate("explorer", "name displayName display_name email city country")
+      .populate("experience", "title startsAt endsAt startDate endDate city country address price isActive status maxParticipants remainingSpots soldOut environment");
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+
+    const [payments, reports, messagesCount] = await Promise.all([
+      Payment.find({ booking: booking._id })
+        .select("status paymentType amount totalAmount currency stripePaymentIntentId stripeSessionId stripeChargeId createdAt updatedAt")
+        .sort({ createdAt: -1 })
+        .lean(),
+      Report.find({ booking: booking._id })
+        .select("type status reason comment affectsPayout createdAt handledAt actionTaken")
+        .sort({ createdAt: -1 })
+        .limit(20)
+        .lean(),
+      Message.countDocuments({ booking: booking._id }),
+    ]);
+
+    return res.json({
+      booking: serializeAdminBooking(booking.toObject ? booking.toObject() : booking, {
+        payment: payments[0]
+          ? {
+              status: payments[0].status || "",
+              paymentType: payments[0].paymentType || "",
+              amount: Number(payments[0].totalAmount || payments[0].amount || 0),
+              currency: payments[0].currency || "ron",
+              hasStripePaymentIntent: !!payments[0].stripePaymentIntentId,
+              stripeSessionId: payments[0].stripeSessionId || null,
+            }
+          : null,
+        reportsCount: reports.length,
+        messagesCount,
+      }),
+      payments,
+      reports,
+      messagesCount,
+    });
+  } catch (err) {
+    console.error("Admin booking details error", err);
+    return res.status(500).json({ message: "Failed to load booking details" });
+  }
+});
+
+router.post("/bookings/:id/cancel", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isObjectIdLike(id)) {
+      return res.status(400).json({ message: "Invalid booking id" });
+    }
+    const reason = String(req.adminReason || req.body?.reason || "").trim();
+    if (!reason) {
+      return res.status(400).json({ message: "Reason is required" });
+    }
+
+    const booking = await Booking.findById(id)
+      .populate("experience", "title maxParticipants remainingSpots soldOut isActive status")
+      .populate("host", "email name displayName")
+      .populate("explorer", "email name displayName");
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    if (adminBookingFinalStatuses.includes(String(booking.status || "").toUpperCase())) {
+      return res.status(400).json({ message: "Booking already finalized" });
+    }
+
+    const before = {
+      status: booking.status,
+      cancelledAt: booking.cancelledAt || null,
+      refundedAt: booking.refundedAt || null,
+      payoutEligibleAt: booking.payoutEligibleAt || null,
+    };
+
+    let refundAttempted = false;
+    let refundSucceeded = false;
+    let refundErrorMessage = null;
+    let payment = null;
+    if (adminBookingPaidStatuses.includes(String(booking.status || "").toUpperCase())) {
+      payment = await Payment.findOne({ booking: booking._id, status: { $in: ["CONFIRMED", "INITIATED"] } }).sort({ createdAt: -1 });
+      if (payment?.stripePaymentIntentId) {
+        refundAttempted = true;
+        try {
+          await stripe.refunds.create({
+            payment_intent: payment.stripePaymentIntentId,
+            refund_application_fee: true,
+            reverse_transfer: true,
+          });
+          payment.status = "REFUNDED";
+          await payment.save();
+          refundSucceeded = true;
+        } catch (err) {
+          refundErrorMessage = err?.message || "Refund failed";
+          console.error("Admin cancel booking refund error", refundErrorMessage);
+        }
+      }
+    }
+
+    booking.payoutEligibleAt = null;
+    booking.cancelledAt = new Date();
+    if (refundAttempted && !refundSucceeded) {
+      booking.status = "REFUND_FAILED";
+      booking.lastRefundAttemptAt = new Date();
+      booking.refundAttempts = Number(booking.refundAttempts || 0) + 1;
+    } else if (refundSucceeded) {
+      booking.status = "REFUNDED";
+      booking.refundedAt = new Date();
+    } else {
+      booking.status = "CANCELLED";
+    }
+    await booking.save();
+
+    try {
+      const currentStatus = String(before.status || "").toUpperCase();
+      const reservedBefore = !["CANCELLED", "REFUNDED", "COMPLETED", "AUTO_COMPLETED", "NO_SHOW"].includes(currentStatus);
+      if (reservedBefore && booking.experience && booking.status !== "REFUND_FAILED") {
+        await restoreExperienceSpotsForCancelledBooking(booking, booking.experience);
+      }
+    } catch (err) {
+      console.error("Admin cancel booking restore spots error", err);
+    }
+
+    await writeAdminAuditLog(req, {
+      actionType: "BOOKING_CANCEL_ADMIN",
+      targetType: "booking",
+      targetId: String(booking._id),
+      reason,
+      diff: {
+        before,
+        after: {
+          status: booking.status,
+          cancelledAt: booking.cancelledAt || null,
+          refundedAt: booking.refundedAt || null,
+          payoutEligibleAt: booking.payoutEligibleAt || null,
+        },
+      },
+      meta: {
+        refundAttempted,
+        refundSucceeded,
+        refundErrorMessage,
+        paymentId: payment?._id ? String(payment._id) : null,
+      },
+    });
+
+    return res.json({
+      message: refundAttempted
+        ? refundSucceeded
+          ? "Booking cancelled and refunded"
+          : "Booking cancel recorded, refund failed"
+        : "Booking cancelled",
+      booking: serializeAdminBooking(booking.toObject ? booking.toObject() : booking),
+      refundAttempted,
+      refundSucceeded,
+      refundErrorMessage,
+    });
+  } catch (err) {
+    console.error("Admin booking cancel error", err);
+    return res.status(500).json({ message: "Failed to cancel booking" });
+  }
+});
+
+router.post("/bookings/:id/refund", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isObjectIdLike(id)) return res.status(400).json({ message: "Invalid booking id" });
+    const reason = String(req.adminReason || req.body?.reason || "").trim();
+    if (!reason) return res.status(400).json({ message: "Reason is required" });
+
+    const booking = await Booking.findById(id).populate("host", "email").populate("explorer", "email");
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+
+    const payment = await Payment.findOne({ booking: booking._id, status: { $in: ["CONFIRMED", "INITIATED"] } }).sort({ createdAt: -1 });
+    if (!payment?.stripePaymentIntentId) {
+      return res.status(400).json({ message: "No refundable payment found" });
+    }
+
+    const before = {
+      bookingStatus: booking.status,
+      paymentStatus: payment.status,
+      refundedAt: booking.refundedAt || null,
+    };
+
+    await stripe.refunds.create({
+      payment_intent: payment.stripePaymentIntentId,
+      refund_application_fee: true,
+      reverse_transfer: true,
+    });
+
+    payment.status = "REFUNDED";
+    await payment.save();
+    booking.status = "REFUNDED";
+    booking.refundedAt = new Date();
+    booking.cancelledAt = booking.cancelledAt || new Date();
+    booking.payoutEligibleAt = null;
+    await booking.save();
+
+    await writeAdminAuditLog(req, {
+      actionType: "BOOKING_REFUND_ADMIN",
+      targetType: "booking",
+      targetId: String(booking._id),
+      reason,
+      diff: {
+        before,
+        after: {
+          bookingStatus: booking.status,
+          paymentStatus: payment.status,
+          refundedAt: booking.refundedAt || null,
+        },
+      },
+      meta: { paymentId: String(payment._id) },
+    });
+
+    return res.json({ message: "Refund succeeded", bookingId: String(booking._id), paymentId: String(payment._id) });
+  } catch (err) {
+    console.error("Admin booking refund error", err);
+    return res.status(500).json({ message: err?.message || "Failed to refund booking" });
   }
 });
 

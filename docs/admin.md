@@ -62,13 +62,24 @@ Fields (MVP):
   - body (partial): `isActive`, `status`, `reason`
   - `reason` required for disable/cancel actions
 
+### Bookings
+
+- `GET /admin/bookings?q=&status=&paid=&hostId=&explorerId=&experienceId=&from=&to=&page=&limit=`
+- `GET /admin/bookings/:id`
+  - details + payments + reports + messages count
+- `POST /admin/bookings/:id/cancel`
+  - body: `reason` (required)
+  - admin cancel workflow with optional Stripe refund attempt
+- `POST /admin/bookings/:id/refund`
+  - body: `reason` (required)
+  - manual Stripe refund for refundable bookings
+
 ### Media Ops
 
 - `GET /admin/media/stats`
 
 ## Next planned tabs
 
-- `/admin/bookings`
 - `/admin/reports`
 - `/admin/payments`
 - audit log full table + filters
