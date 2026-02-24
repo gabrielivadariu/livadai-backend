@@ -80,6 +80,17 @@ Fields (MVP):
   - body: `reason` (required)
   - manual Stripe refund for refundable bookings
 
+### Messages / Conversations
+
+- `GET /admin/messages?q=&bookingId=&hasReports=&from=&to=&page=&limit=`
+  - booking-centric conversations (grouped by booking)
+  - includes booking summary, last message, counts, report counters
+- `GET /admin/messages/:bookingId`
+  - conversation thread (messages)
+  - related booking summary
+  - latest reports for booking
+  - latest payments for booking
+
 ### Reports / Moderation
 
 - `GET /admin/reports?q=&status=&type=&assigned=&from=&to=&page=&limit=`
@@ -127,4 +138,4 @@ Fields (MVP):
 
 ## Next planned tabs
 
-- `/admin/messages`
+- bulk actions / CSV exports

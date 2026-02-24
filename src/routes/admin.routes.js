@@ -304,6 +304,22 @@ const serializeAdminReport = (report, extras = {}) => {
   };
 };
 
+const serializeAdminMessage = (message) => ({
+  id: String(message._id),
+  bookingId: message.booking ? String(message.booking._id || message.booking) : "",
+  sender: message.sender
+    ? {
+        id: String(message.sender._id || message.sender),
+        name: message.sender.displayName || message.sender.display_name || message.sender.name || "",
+        email: message.sender.email || "",
+      }
+    : null,
+  senderProfile: message.senderProfile || null,
+  message: message.message || "",
+  createdAt: message.createdAt || null,
+  updatedAt: message.updatedAt || null,
+});
+
 const serializeAdminPaymentsHost = (user) => ({
   id: String(user._id),
   name: user.displayName || user.display_name || user.name || "",
@@ -2031,6 +2047,263 @@ router.post("/bookings/:id/refund", async (req, res) => {
   } catch (err) {
     console.error("Admin booking refund error", err);
     return res.status(500).json({ message: err?.message || "Failed to refund booking" });
+  }
+});
+
+router.get("/messages", async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const bookingId = String(req.query.bookingId || "").trim();
+    const hasReports = String(req.query.hasReports || "").trim().toLowerCase(); // true|false|all
+    const from = String(req.query.from || "").trim();
+    const to = String(req.query.to || "").trim();
+    const limit = clampLimit(req.query.limit, 20, 100);
+    const page = Math.max(1, Number(req.query.page || 1) || 1);
+    const skip = (page - 1) * limit;
+
+    let filteredBookingIds = null;
+    if (bookingId && isObjectIdLike(bookingId)) {
+      filteredBookingIds = [new mongoose.Types.ObjectId(bookingId)];
+    }
+
+    if (q) {
+      const safe = escapeRegex(q);
+      const bookingOr = [];
+      if (isObjectIdLike(q)) {
+        bookingOr.push({ _id: new mongoose.Types.ObjectId(q) });
+      }
+      const [userMatches, expMatches] = await Promise.all([
+        User.find({
+          $or: [
+            { name: { $regex: safe, $options: "i" } },
+            { displayName: { $regex: safe, $options: "i" } },
+            { display_name: { $regex: safe, $options: "i" } },
+            { email: { $regex: safe, $options: "i" } },
+          ],
+        })
+          .select("_id")
+          .limit(50)
+          .lean(),
+        Experience.find({
+          $or: [
+            { title: { $regex: safe, $options: "i" } },
+            { city: { $regex: safe, $options: "i" } },
+            { country: { $regex: safe, $options: "i" } },
+          ],
+        })
+          .select("_id")
+          .limit(50)
+          .lean(),
+      ]);
+      const userIds = userMatches.map((row) => row._id);
+      const expIds = expMatches.map((row) => row._id);
+      if (userIds.length) {
+        bookingOr.push({ host: { $in: userIds } }, { explorer: { $in: userIds } });
+      }
+      if (expIds.length) bookingOr.push({ experience: { $in: expIds } });
+
+      const textMatchMessageBookings = await Message.find({
+        message: { $regex: safe, $options: "i" },
+      })
+        .select("booking")
+        .sort({ createdAt: -1 })
+        .limit(500)
+        .lean();
+
+      const msgBookingIds = textMatchMessageBookings.map((m) => m.booking).filter(Boolean);
+      if (msgBookingIds.length) {
+        bookingOr.push({ _id: { $in: msgBookingIds } });
+      }
+
+      if (!bookingOr.length) {
+        return res.json({ page, limit, total: 0, pages: 1, items: [] });
+      }
+
+      const bookingMatches = await Booking.find({ $or: bookingOr }).select("_id").limit(1000).lean();
+      const qBookingIds = bookingMatches.map((row) => row._id);
+      if (!qBookingIds.length) {
+        return res.json({ page, limit, total: 0, pages: 1, items: [] });
+      }
+      filteredBookingIds = filteredBookingIds
+        ? qBookingIds.filter((idObj) => filteredBookingIds.some((x) => String(x) === String(idObj)))
+        : qBookingIds;
+      if (!filteredBookingIds.length) {
+        return res.json({ page, limit, total: 0, pages: 1, items: [] });
+      }
+    }
+
+    const messageMatch = {};
+    if (Array.isArray(filteredBookingIds)) {
+      messageMatch.booking = { $in: filteredBookingIds };
+    }
+
+    const createdAt = {};
+    if (from) {
+      const d = new Date(from);
+      if (!Number.isNaN(d.getTime())) createdAt.$gte = d;
+    }
+    if (to) {
+      const d = new Date(to);
+      if (!Number.isNaN(d.getTime())) createdAt.$lte = new Date(d.getTime() + 24 * 60 * 60 * 1000 - 1);
+    }
+    if (Object.keys(createdAt).length) messageMatch.createdAt = createdAt;
+
+    const grouped = await Message.aggregate([
+      { $match: messageMatch },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$booking",
+          messagesCount: { $sum: 1 },
+          lastMessageAt: { $first: "$createdAt" },
+          lastMessageText: { $first: "$message" },
+          lastSenderId: { $first: "$sender" },
+        },
+      },
+      { $sort: { lastMessageAt: -1 } },
+    ]);
+
+    let conversationRows = grouped;
+    if (hasReports === "true" || hasReports === "false") {
+      const bookingIds = grouped.map((g) => g._id);
+      const reportsAgg = bookingIds.length
+        ? await Report.aggregate([{ $match: { booking: { $in: bookingIds } } }, { $group: { _id: "$booking", count: { $sum: 1 } } }])
+        : [];
+      const reportsByBooking = new Map(reportsAgg.map((r) => [String(r._id), Number(r.count || 0)]));
+      conversationRows = grouped.filter((row) => {
+        const count = reportsByBooking.get(String(row._id)) || 0;
+        return hasReports === "true" ? count > 0 : count === 0;
+      });
+    }
+
+    const total = conversationRows.length;
+    const pagedRows = conversationRows.slice(skip, skip + limit);
+    const bookingIds = pagedRows.map((row) => row._id);
+    const senderIds = pagedRows.map((row) => row.lastSenderId).filter(Boolean);
+
+    const [bookings, reportsAgg, openReportsAgg, usersByIdRows] = await Promise.all([
+      bookingIds.length
+        ? Booking.find({ _id: { $in: bookingIds } })
+            .populate("host", "name displayName display_name email")
+            .populate("explorer", "name displayName display_name email")
+            .populate("experience", "title startsAt endsAt startDate endDate city country price isActive status")
+            .lean()
+        : [],
+      bookingIds.length
+        ? Report.aggregate([{ $match: { booking: { $in: bookingIds } } }, { $group: { _id: "$booking", count: { $sum: 1 } } }])
+        : [],
+      bookingIds.length
+        ? Report.aggregate([
+            { $match: { booking: { $in: bookingIds }, status: { $in: ["OPEN", "INVESTIGATING"] } } },
+            { $group: { _id: "$booking", count: { $sum: 1 } } },
+          ])
+        : [],
+      senderIds.length
+        ? User.find({ _id: { $in: senderIds } }).select("name displayName display_name email").lean()
+        : [],
+    ]);
+
+    const bookingById = new Map(bookings.map((b) => [String(b._id), b]));
+    const reportsByBooking = new Map(reportsAgg.map((r) => [String(r._id), Number(r.count || 0)]));
+    const openReportsByBooking = new Map(openReportsAgg.map((r) => [String(r._id), Number(r.count || 0)]));
+    const userById = new Map(usersByIdRows.map((u) => [String(u._id), u]));
+
+    const items = pagedRows
+      .map((row) => {
+        const booking = bookingById.get(String(row._id));
+        if (!booking) return null;
+        const sender = row.lastSenderId ? userById.get(String(row.lastSenderId)) : null;
+        return {
+          bookingId: String(row._id),
+          messagesCount: Number(row.messagesCount || 0),
+          lastMessageAt: row.lastMessageAt || null,
+          lastMessageText: row.lastMessageText || "",
+          lastSender: sender
+            ? {
+                id: String(sender._id),
+                name: sender.displayName || sender.display_name || sender.name || "",
+                email: sender.email || "",
+              }
+            : null,
+          reportsCount: reportsByBooking.get(String(row._id)) || 0,
+          openReportsCount: openReportsByBooking.get(String(row._id)) || 0,
+          booking: serializeAdminBooking(booking),
+        };
+      })
+      .filter(Boolean);
+
+    return res.json({
+      page,
+      limit,
+      total,
+      pages: Math.max(1, Math.ceil(total / limit)),
+      items,
+    });
+  } catch (err) {
+    console.error("Admin messages list error", err);
+    return res.status(500).json({ message: "Failed to load admin messages" });
+  }
+});
+
+router.get("/messages/:bookingId", async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    if (!isObjectIdLike(bookingId)) {
+      return res.status(400).json({ message: "Invalid booking id" });
+    }
+
+    const booking = await Booking.findById(bookingId)
+      .populate("host", "name displayName display_name email city country")
+      .populate("explorer", "name displayName display_name email city country")
+      .populate("experience", "title startsAt endsAt startDate endDate city country address price isActive status environment");
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+
+    const [messages, reports, payments] = await Promise.all([
+      Message.find({ booking: booking._id })
+        .populate("sender", "name displayName display_name email")
+        .sort({ createdAt: 1 })
+        .limit(200)
+        .lean(),
+      Report.find({ booking: booking._id })
+        .select("type status reason comment affectsPayout createdAt handledAt actionTaken")
+        .sort({ createdAt: -1 })
+        .limit(20)
+        .lean(),
+      Payment.find({ booking: booking._id })
+        .select("status paymentType amount totalAmount currency stripePaymentIntentId stripeSessionId createdAt updatedAt")
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .lean(),
+    ]);
+
+    const summary = {
+      firstMessageAt: messages[0]?.createdAt || null,
+      lastMessageAt: messages[messages.length - 1]?.createdAt || null,
+      messagesCount: messages.length,
+      reportsOpen: reports.filter((r) => ["OPEN", "INVESTIGATING"].includes(String(r.status || ""))).length,
+      reportsTotal: reports.length,
+    };
+
+    return res.json({
+      booking: serializeAdminBooking(booking.toObject ? booking.toObject() : booking),
+      summary,
+      messages: messages.map(serializeAdminMessage),
+      reports,
+      payments: payments.map((p) => ({
+        id: String(p._id),
+        status: p.status || "",
+        paymentType: p.paymentType || "",
+        amount: Number(p.totalAmount || p.amount || 0),
+        currency: p.currency || "ron",
+        stripePaymentIntentId: p.stripePaymentIntentId || null,
+        stripeSessionId: p.stripeSessionId || null,
+        createdAt: p.createdAt || null,
+        updatedAt: p.updatedAt || null,
+      })),
+    });
+  } catch (err) {
+    console.error("Admin message thread error", err);
+    return res.status(500).json({ message: "Failed to load admin message thread" });
   }
 });
 
