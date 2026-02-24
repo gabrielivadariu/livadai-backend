@@ -1310,6 +1310,275 @@ router.get("/experiences", async (req, res) => {
   }
 });
 
+router.get("/experiences/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isObjectIdLike(id)) {
+      return res.status(400).json({ message: "Invalid experience id" });
+    }
+
+    const exp = await Experience.findById(id)
+      .select(
+        [
+          "host",
+          "title",
+          "shortDescription",
+          "description",
+          "category",
+          "price",
+          "durationMinutes",
+          "currencyCode",
+          "activityType",
+          "maxParticipants",
+          "remainingSpots",
+          "soldOut",
+          "status",
+          "environment",
+          "startsAt",
+          "endsAt",
+          "startDate",
+          "endDate",
+          "country",
+          "countryCode",
+          "city",
+          "street",
+          "streetNumber",
+          "address",
+          "latitude",
+          "longitude",
+          "locationLat",
+          "locationLng",
+          "location",
+          "mainImageUrl",
+          "coverImageUrl",
+          "images",
+          "videos",
+          "mediaRefs",
+          "languages",
+          "isActive",
+          "reminderHostSent",
+          "mediaCleanedAt",
+          "createdAt",
+          "updatedAt",
+        ].join(" ")
+      )
+      .populate("host", "name displayName display_name email stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted")
+      .lean();
+
+    if (!exp) return res.status(404).json({ message: "Experience not found" });
+
+    const expObjectId = new mongoose.Types.ObjectId(id);
+
+    const [
+      bookingsTotal,
+      bookingsActive,
+      bookingsPaidLike,
+      participantsAgg,
+      reportsTotal,
+      reportsOpen,
+      messagesCount,
+      recentBookingsRaw,
+      recentReportsRaw,
+      recentAuditRaw,
+    ] = await Promise.all([
+      Booking.countDocuments({ experience: expObjectId }),
+      Booking.countDocuments({ experience: expObjectId, status: { $in: adminBookingActiveStatuses } }),
+      Booking.countDocuments({ experience: expObjectId, status: { $in: adminBookingPaidStatuses } }),
+      Booking.aggregate([
+        { $match: { experience: expObjectId, status: { $in: adminParticipantStatuses } } },
+        { $group: { _id: null, participants: { $sum: { $ifNull: ["$quantity", 1] } } } },
+      ]),
+      Report.countDocuments({ experience: expObjectId }),
+      Report.countDocuments({ experience: expObjectId, status: { $in: ["OPEN", "INVESTIGATING"] } }),
+      Message.aggregate([
+        {
+          $lookup: {
+            from: "bookings",
+            localField: "booking",
+            foreignField: "_id",
+            as: "bookingDoc",
+          },
+        },
+        { $unwind: "$bookingDoc" },
+        { $match: { "bookingDoc.experience": expObjectId } },
+        { $count: "count" },
+      ]),
+      Booking.find({ experience: expObjectId })
+        .populate("host", "name displayName display_name email")
+        .populate("explorer", "name displayName display_name email")
+        .populate("experience", "title startsAt endsAt startDate endDate city country price isActive status")
+        .sort({ createdAt: -1 })
+        .limit(8)
+        .lean(),
+      Report.find({ experience: expObjectId })
+        .populate("reporter", "name displayName display_name email")
+        .populate("host", "name displayName display_name email")
+        .populate("targetUserId", "name displayName display_name email isBlocked isBanned")
+        .populate("experience", "title status isActive city country")
+        .populate("booking", "status quantity")
+        .sort({ createdAt: -1 })
+        .limit(8)
+        .lean(),
+      AdminAuditLog.find({ targetType: "experience", targetId: String(id) })
+        .sort({ createdAt: -1 })
+        .limit(12)
+        .lean(),
+    ]);
+
+    const bookingIds = recentBookingsRaw.map((row) => row._id);
+    const [bookingPayments, bookingReportsAgg, bookingMessagesAgg] = bookingIds.length
+      ? await Promise.all([
+          Payment.find({ booking: { $in: bookingIds } })
+            .select("booking status paymentType amount totalAmount currency stripePaymentIntentId stripeSessionId")
+            .sort({ createdAt: -1 })
+            .lean(),
+          Report.aggregate([{ $match: { booking: { $in: bookingIds } } }, { $group: { _id: "$booking", count: { $sum: 1 } } }]),
+          Message.aggregate([{ $match: { booking: { $in: bookingIds } } }, { $group: { _id: "$booking", count: { $sum: 1 } } }]),
+        ])
+      : [[], [], []];
+
+    const paymentByBooking = new Map();
+    for (const p of bookingPayments) {
+      const key = String(p.booking);
+      if (paymentByBooking.has(key)) continue;
+      paymentByBooking.set(key, {
+        status: p.status || "",
+        paymentType: p.paymentType || "",
+        amount: Number(p.totalAmount || p.amount || 0),
+        currency: p.currency || "ron",
+        hasStripePaymentIntent: !!p.stripePaymentIntentId,
+        stripeSessionId: p.stripeSessionId || null,
+      });
+    }
+    const bookingReportsCountByBooking = new Map(bookingReportsAgg.map((row) => [String(row._id), Number(row.count || 0)]));
+    const bookingMessagesCountByBooking = new Map(bookingMessagesAgg.map((row) => [String(row._id), Number(row.count || 0)]));
+
+    const media = [];
+    const seenMedia = new Set();
+    const pushMedia = (url, kind, source, extra = {}) => {
+      const u = String(url || "").trim();
+      if (!u || seenMedia.has(u)) return;
+      seenMedia.add(u);
+      media.push({
+        url: u,
+        kind,
+        source,
+        ...extra,
+      });
+    };
+    if (Array.isArray(exp.mediaRefs)) {
+      for (const ref of exp.mediaRefs) {
+        pushMedia(ref?.url, ref?.resourceType === "video" ? "video" : "image", "mediaRefs", {
+          publicId: ref?.publicId || null,
+          resourceType: ref?.resourceType || "image",
+        });
+      }
+    }
+    pushMedia(exp.coverImageUrl, "image", "coverImageUrl");
+    pushMedia(exp.mainImageUrl, "image", "mainImageUrl");
+    for (const url of Array.isArray(exp.images) ? exp.images : []) pushMedia(url, "image", "images");
+    for (const url of Array.isArray(exp.videos) ? exp.videos : []) pushMedia(url, "video", "videos");
+
+    const recentBookings = recentBookingsRaw.map((row) =>
+      serializeAdminBooking(row, {
+        payment: paymentByBooking.get(String(row._id)) || null,
+        reportsCount: bookingReportsCountByBooking.get(String(row._id)) || 0,
+        messagesCount: bookingMessagesCountByBooking.get(String(row._id)) || 0,
+      })
+    );
+    const recentReports = recentReportsRaw.map((row) => serializeAdminReport(row, { now: new Date() }));
+    const recentAudit = recentAuditRaw.map((row) => ({
+      id: String(row._id),
+      actorId: row.actorId ? String(row.actorId) : "",
+      actorEmail: row.actorEmail || "",
+      actionType: row.actionType || "",
+      targetType: row.targetType || "",
+      targetId: row.targetId || "",
+      reason: row.reason || "",
+      diff: row.diff || null,
+      meta: row.meta || null,
+      ip: row.ip || "",
+      userAgent: row.userAgent || "",
+      createdAt: row.createdAt || null,
+    }));
+
+    const timeline = [
+      { kind: "EXPERIENCE_CREATED", at: exp.createdAt || null, label: "Experiență creată", targetId: String(exp._id) },
+      ...recentBookings.map((b) => ({
+        kind: "BOOKING",
+        at: b.createdAt || null,
+        label: `${b.status || "BOOKING"} · ${b.explorer?.email || b.explorer?.name || "explorer"}`,
+        targetId: b.id,
+      })),
+      ...recentReports.map((r) => ({
+        kind: "REPORT",
+        at: r.createdAt || null,
+        label: `${r.type || "REPORT"} · ${r.status || "—"}`,
+        targetId: r.id,
+      })),
+      ...recentAudit.map((a) => ({
+        kind: "ADMIN_AUDIT",
+        at: a.createdAt || null,
+        label: `${a.actionType || "ACTION"} (${a.actorEmail || "admin"})`,
+        targetId: a.id,
+      })),
+    ]
+      .filter((row) => row.at)
+      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+      .slice(0, 20);
+
+    return res.json({
+      experience: {
+        ...serializeAdminExperience(exp),
+        shortDescription: exp.shortDescription || "",
+        description: exp.description || "",
+        category: exp.category || "",
+        durationMinutes: Number(exp.durationMinutes || 0),
+        currencyCode: exp.currencyCode || "RON",
+        activityType: exp.activityType || "",
+        languages: Array.isArray(exp.languages) ? exp.languages : [],
+        address: exp.address || exp.location?.formattedAddress || "",
+        street: exp.street || exp.location?.street || "",
+        streetNumber: exp.streetNumber || exp.location?.streetNumber || "",
+        countryCode: exp.countryCode || "",
+        latitude: exp.latitude ?? exp.locationLat ?? exp.location?.lat ?? null,
+        longitude: exp.longitude ?? exp.locationLng ?? exp.location?.lng ?? null,
+        reminderHostSent: !!exp.reminderHostSent,
+        mediaCleanedAt: exp.mediaCleanedAt || null,
+        host: exp.host
+          ? {
+              id: String(exp.host._id || exp.host),
+              name: exp.host.displayName || exp.host.display_name || exp.host.name || "",
+              email: exp.host.email || "",
+              stripeAccountId: exp.host.stripeAccountId || null,
+              isStripeChargesEnabled: !!exp.host.isStripeChargesEnabled,
+              isStripePayoutsEnabled: !!exp.host.isStripePayoutsEnabled,
+              isStripeDetailsSubmitted: !!exp.host.isStripeDetailsSubmitted,
+            }
+          : null,
+      },
+      counts: {
+        bookingsTotal,
+        bookingsActive,
+        bookingsPaidLike,
+        participantsBooked: Number(participantsAgg?.[0]?.participants || 0),
+        reportsTotal,
+        reportsOpen,
+        messagesCount: Number(messagesCount?.[0]?.count || 0),
+        mediaItems: media.length,
+      },
+      media,
+      recentBookings,
+      recentReports,
+      recentAudit,
+      timeline,
+    });
+  } catch (err) {
+    console.error("Admin experience details error", err);
+    return res.status(500).json({ message: "Failed to load experience details" });
+  }
+});
+
 router.patch("/experiences/:id", async (req, res) => {
   try {
     const { id } = req.params;

@@ -62,6 +62,8 @@ Fields (MVP):
 ### Experiences
 
 - `GET /admin/experiences?q=&active=&status=&page=&limit=`
+- `GET /admin/experiences/:id`
+  - experience details + media preview data + counts + recent bookings/reports + timeline + recent audit
 - `PATCH /admin/experiences/:id`
   - body (partial): `isActive`, `status`, `reason`
   - `reason` required for disable/cancel actions
