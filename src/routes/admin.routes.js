@@ -943,6 +943,228 @@ router.get("/users", async (req, res) => {
   }
 });
 
+router.get("/users/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isObjectIdLike(id)) {
+      return res.status(400).json({ message: "Invalid user id" });
+    }
+
+    const user = await User.findById(id)
+      .select(
+        [
+          "name",
+          "displayName",
+          "display_name",
+          "email",
+          "role",
+          "isBlocked",
+          "isBanned",
+          "emailVerified",
+          "phoneVerified",
+          "city",
+          "country",
+          "languages",
+          "about_me",
+          "shortBio",
+          "experience",
+          "phone",
+          "phoneCountryCode",
+          "total_participants",
+          "total_events",
+          "isTrustedParticipant",
+          "clientFaultCancelsCount",
+          "stripeAccountId",
+          "isStripeChargesEnabled",
+          "isStripePayoutsEnabled",
+          "isStripeDetailsSubmitted",
+          "tokenVersion",
+          "lastAuthAt",
+          "rating_avg",
+          "rating_count",
+          "createdAt",
+          "updatedAt",
+          "hostProfile",
+        ].join(" ")
+      )
+      .lean();
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const userObjectId = new mongoose.Types.ObjectId(id);
+
+    const [
+      bookingsAsExplorerCount,
+      bookingsAsHostCount,
+      experiencesCount,
+      reportsCreatedCount,
+      reportsAgainstCount,
+      messagesSentCount,
+      recentBookingsRaw,
+      recentExperiencesRaw,
+      recentReportsRaw,
+      recentAuditRaw,
+    ] = await Promise.all([
+      Booking.countDocuments({ explorer: userObjectId }),
+      Booking.countDocuments({ host: userObjectId }),
+      Experience.countDocuments({ host: userObjectId }),
+      Report.countDocuments({ reporter: userObjectId }),
+      Report.countDocuments({ targetUserId: userObjectId }),
+      Message.countDocuments({ sender: userObjectId }),
+      Booking.find({ $or: [{ explorer: userObjectId }, { host: userObjectId }] })
+        .populate("host", "name displayName display_name email")
+        .populate("explorer", "name displayName display_name email")
+        .populate("experience", "title startsAt endsAt startDate endDate city country price isActive status")
+        .sort({ createdAt: -1 })
+        .limit(8)
+        .lean(),
+      Experience.find({ host: userObjectId })
+        .populate("host", "name displayName display_name email")
+        .sort({ createdAt: -1 })
+        .limit(8)
+        .lean(),
+      Report.find({
+        $or: [{ reporter: userObjectId }, { host: userObjectId }, { targetUserId: userObjectId }],
+      })
+        .populate("reporter", "name displayName display_name email")
+        .populate("host", "name displayName display_name email")
+        .populate("targetUserId", "name displayName display_name email isBlocked isBanned")
+        .populate("experience", "title status isActive city country")
+        .populate("booking", "status quantity")
+        .sort({ createdAt: -1 })
+        .limit(8)
+        .lean(),
+      AdminAuditLog.find({
+        $or: [{ targetType: "user", targetId: String(id) }, { actorId: String(id) }],
+      })
+        .sort({ createdAt: -1 })
+        .limit(12)
+        .lean(),
+    ]);
+
+    const bookingIds = recentBookingsRaw.map((row) => row._id);
+    const bookingPayments = bookingIds.length
+      ? await Payment.find({ booking: { $in: bookingIds } })
+          .select("booking status paymentType amount totalAmount currency stripePaymentIntentId stripeSessionId")
+          .sort({ createdAt: -1 })
+          .lean()
+      : [];
+
+    const paymentByBooking = new Map();
+    for (const p of bookingPayments) {
+      const key = String(p.booking);
+      if (paymentByBooking.has(key)) continue;
+      paymentByBooking.set(key, {
+        status: p.status || "",
+        paymentType: p.paymentType || "",
+        amount: Number(p.totalAmount || p.amount || 0),
+        currency: p.currency || "ron",
+        hasStripePaymentIntent: !!p.stripePaymentIntentId,
+        stripeSessionId: p.stripeSessionId || null,
+      });
+    }
+
+    const recentBookings = recentBookingsRaw.map((row) =>
+      serializeAdminBooking(row, {
+        payment: paymentByBooking.get(String(row._id)) || null,
+      })
+    );
+    const recentExperiences = recentExperiencesRaw.map((row) => serializeAdminExperience(row));
+    const recentReports = recentReportsRaw.map((row) => serializeAdminReport(row, { now: new Date() }));
+    const recentAudit = recentAuditRaw.map((row) => ({
+      id: String(row._id),
+      actorId: row.actorId ? String(row.actorId) : "",
+      actorEmail: row.actorEmail || "",
+      actionType: row.actionType || "",
+      targetType: row.targetType || "",
+      targetId: row.targetId || "",
+      reason: row.reason || "",
+      diff: row.diff || null,
+      meta: row.meta || null,
+      ip: row.ip || "",
+      userAgent: row.userAgent || "",
+      createdAt: row.createdAt || null,
+    }));
+
+    const timeline = [
+      { kind: "USER_CREATED", at: user.createdAt || null, label: "Cont creat" },
+      ...recentBookings.map((b) => ({
+        kind: "BOOKING",
+        at: b.createdAt || null,
+        label: `${b.status || "BOOKING"} · ${b.experience?.title || "Experiență"}`,
+        targetId: b.id,
+      })),
+      ...recentExperiences.map((e) => ({
+        kind: "EXPERIENCE",
+        at: e.createdAt || null,
+        label: `${e.status || "experience"} · ${e.title || "Fără titlu"}`,
+        targetId: e.id,
+      })),
+      ...recentReports.map((r) => ({
+        kind: "REPORT",
+        at: r.createdAt || null,
+        label: `${r.status || "REPORT"} · ${r.type || "REPORT"}`,
+        targetId: r.id,
+      })),
+      ...recentAudit.map((a) => ({
+        kind: "ADMIN_AUDIT",
+        at: a.createdAt || null,
+        label: `${a.actionType || "ACTION"} (${a.actorEmail || "admin"})`,
+        targetId: a.id,
+      })),
+    ]
+      .filter((row) => row.at)
+      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+      .slice(0, 20);
+
+    return res.json({
+      user: {
+        ...serializeAdminUser(user),
+        phone: user.phone || "",
+        phoneCountryCode: user.phoneCountryCode || "",
+        phoneVerified: !!user.phoneVerified,
+        languages: Array.isArray(user.languages) ? user.languages : [],
+        aboutMe: user.about_me || "",
+        shortBio: user.shortBio || "",
+        experience: user.experience || "",
+        tokenVersion: Number(user.tokenVersion || 0),
+        lastAuthAt: user.lastAuthAt || null,
+        isTrustedParticipant: !!user.isTrustedParticipant,
+        clientFaultCancelsCount: Number(user.clientFaultCancelsCount || 0),
+        totalParticipants: Number(user.total_participants || 0),
+        totalEvents: Number(user.total_events || 0),
+        ratingAvg: Number(user.rating_avg || 0),
+        ratingCount: Number(user.rating_count || 0),
+        stripe: {
+          accountId: user.stripeAccountId || null,
+          connected: !!user.stripeAccountId,
+          chargesEnabled: !!user.isStripeChargesEnabled,
+          payoutsEnabled: !!user.isStripePayoutsEnabled,
+          detailsSubmitted: !!user.isStripeDetailsSubmitted,
+        },
+        hostProfile: user.hostProfile || null,
+      },
+      counts: {
+        bookingsAsExplorer: bookingsAsExplorerCount,
+        bookingsAsHost: bookingsAsHostCount,
+        bookingsTotal: bookingsAsExplorerCount + bookingsAsHostCount,
+        experiencesHosted: experiencesCount,
+        reportsCreated: reportsCreatedCount,
+        reportsAgainstUser: reportsAgainstCount,
+        messagesSent: messagesSentCount,
+      },
+      recentBookings,
+      recentExperiences,
+      recentReports,
+      recentAudit,
+      timeline,
+    });
+  } catch (err) {
+    console.error("Admin user details error", err);
+    return res.status(500).json({ message: "Failed to load user details" });
+  }
+});
+
 router.patch("/users/:id", async (req, res) => {
   try {
     const { id } = req.params;

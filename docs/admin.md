@@ -53,6 +53,8 @@ Fields (MVP):
 ### Users
 
 - `GET /admin/users?q=&role=&status=&page=&limit=`
+- `GET /admin/users/:id`
+  - user details + counts + recent entities (bookings/experiences/reports) + timeline + recent audit
 - `PATCH /admin/users/:id`
   - body (partial): `role`, `isBlocked`, `isBanned`, `invalidateSessions`, `reason`
   - `reason` required for block/ban actions
