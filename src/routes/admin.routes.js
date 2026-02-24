@@ -303,6 +303,67 @@ const serializeAdminReport = (report, extras = {}) => {
   };
 };
 
+const serializeAdminPaymentsHost = (user) => ({
+  id: String(user._id),
+  name: user.displayName || user.display_name || user.name || "",
+  email: user.email || "",
+  role: user.role || "",
+  isBlocked: !!user.isBlocked,
+  isBanned: !!user.isBanned,
+  stripeAccountId: user.stripeAccountId || null,
+  isStripeChargesEnabled: !!user.isStripeChargesEnabled,
+  isStripePayoutsEnabled: !!user.isStripePayoutsEnabled,
+  isStripeDetailsSubmitted: !!user.isStripeDetailsSubmitted,
+  totalEvents: Number(user.total_events || 0),
+  totalParticipants: Number(user.total_participants || 0),
+  createdAt: user.createdAt || null,
+});
+
+const serializeAdminPaymentIssueBooking = (booking, extras = {}) => ({
+  id: String(booking._id),
+  status: booking.status || "",
+  quantity: Number(booking.quantity || 1),
+  amount: Number(booking.amount || 0),
+  currency: booking.currency || "ron",
+  payoutEligibleAt: booking.payoutEligibleAt || null,
+  refundedAt: booking.refundedAt || null,
+  cancelledAt: booking.cancelledAt || null,
+  refundAttempts: Number(booking.refundAttempts || 0),
+  lastRefundAttemptAt: booking.lastRefundAttemptAt || null,
+  createdAt: booking.createdAt || null,
+  host: booking.host
+    ? {
+        id: String(booking.host._id || booking.host),
+        name: booking.host.displayName || booking.host.display_name || booking.host.name || "",
+        email: booking.host.email || "",
+        stripeAccountId: booking.host.stripeAccountId || null,
+        isStripeChargesEnabled: !!booking.host.isStripeChargesEnabled,
+        isStripePayoutsEnabled: !!booking.host.isStripePayoutsEnabled,
+        isStripeDetailsSubmitted: !!booking.host.isStripeDetailsSubmitted,
+      }
+    : null,
+  explorer: booking.explorer
+    ? {
+        id: String(booking.explorer._id || booking.explorer),
+        name: booking.explorer.displayName || booking.explorer.display_name || booking.explorer.name || "",
+        email: booking.explorer.email || "",
+      }
+    : null,
+  experience: booking.experience
+    ? {
+        id: String(booking.experience._id || booking.experience),
+        title: booking.experience.title || "",
+        city: booking.experience.city || "",
+        country: booking.experience.country || "",
+        startsAt: booking.experience.startsAt || booking.experience.startDate || null,
+        status: booking.experience.status || "",
+        isActive: booking.experience.isActive !== false,
+      }
+    : null,
+  payment: extras.payment || null,
+  issueReason: extras.issueReason || "",
+});
+
 const restoreExperienceSpotsForCancelledBooking = async (booking, expDoc) => {
   if (!expDoc) return;
   const qty = Number(booking.quantity || 1);
@@ -1656,6 +1717,247 @@ router.post("/reports/:id/action", async (req, res) => {
   } catch (err) {
     console.error("Admin report action error", err);
     return res.status(500).json({ message: "Failed to apply report action" });
+  }
+});
+
+router.get("/payments/health", async (_req, res) => {
+  try {
+    const now = new Date();
+    const hostRoleFilter = { role: { $in: ["HOST", "BOTH"] } };
+
+    const [
+      refundFailedCount,
+      refundFailedRecentCount,
+      disputedPaymentsCount,
+      hostsStripeIncompleteCount,
+      hostsStripeMissingAccountCount,
+      eligiblePayoutBookingsCount,
+      payoutAttentionCountAgg,
+      refundFailedBookingsRaw,
+      disputedPaymentsRaw,
+      stripeIncompleteHostsRaw,
+      payoutCandidateBookingsRaw,
+    ] = await Promise.all([
+      Booking.countDocuments({ status: "REFUND_FAILED" }),
+      Booking.countDocuments({ status: "REFUND_FAILED", updatedAt: { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) } }),
+      Payment.countDocuments({ status: { $in: ["DISPUTED", "DISPUTE_LOST"] } }),
+      User.countDocuments({
+        ...hostRoleFilter,
+        $or: [
+          { stripeAccountId: { $exists: false } },
+          { stripeAccountId: null },
+          { stripeAccountId: "" },
+          { isStripeDetailsSubmitted: { $ne: true } },
+          { isStripeChargesEnabled: { $ne: true } },
+          { isStripePayoutsEnabled: { $ne: true } },
+        ],
+      }),
+      User.countDocuments({
+        ...hostRoleFilter,
+        $or: [{ stripeAccountId: { $exists: false } }, { stripeAccountId: null }, { stripeAccountId: "" }],
+      }),
+      Booking.countDocuments({
+        status: { $in: ["COMPLETED", "AUTO_COMPLETED"] },
+        payoutEligibleAt: { $lte: now },
+      }),
+      Booking.aggregate([
+        {
+          $match: {
+            status: { $in: ["COMPLETED", "AUTO_COMPLETED"] },
+            payoutEligibleAt: { $lte: now },
+          },
+        },
+        {
+          $lookup: {
+            from: "users",
+            localField: "host",
+            foreignField: "_id",
+            as: "hostDoc",
+          },
+        },
+        { $unwind: { path: "$hostDoc", preserveNullAndEmptyArrays: true } },
+        {
+          $match: {
+            $or: [
+              { hostDoc: null },
+              { "hostDoc.stripeAccountId": { $exists: false } },
+              { "hostDoc.stripeAccountId": null },
+              { "hostDoc.stripeAccountId": "" },
+              { "hostDoc.isStripeDetailsSubmitted": { $ne: true } },
+              { "hostDoc.isStripeChargesEnabled": { $ne: true } },
+              { "hostDoc.isStripePayoutsEnabled": { $ne: true } },
+            ],
+          },
+        },
+        { $count: "count" },
+      ]),
+      Booking.find({ status: "REFUND_FAILED" })
+        .populate("host", "name displayName display_name email stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted")
+        .populate("explorer", "name displayName display_name email")
+        .populate("experience", "title city country startsAt startDate status isActive")
+        .sort({ updatedAt: -1 })
+        .limit(20)
+        .lean(),
+      Payment.find({ status: { $in: ["DISPUTED", "DISPUTE_LOST"] } })
+        .select("booking host explorer status paymentType totalAmount amount currency stripePaymentIntentId stripeSessionId createdAt updatedAt")
+        .sort({ updatedAt: -1 })
+        .limit(20)
+        .lean(),
+      User.find({
+        ...hostRoleFilter,
+        $or: [
+          { stripeAccountId: { $exists: false } },
+          { stripeAccountId: null },
+          { stripeAccountId: "" },
+          { isStripeDetailsSubmitted: { $ne: true } },
+          { isStripeChargesEnabled: { $ne: true } },
+          { isStripePayoutsEnabled: { $ne: true } },
+        ],
+      })
+        .select("name displayName display_name email role isBlocked isBanned stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted total_events total_participants createdAt")
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .limit(25)
+        .lean(),
+      Booking.find({
+        status: { $in: ["COMPLETED", "AUTO_COMPLETED"] },
+        payoutEligibleAt: { $lte: now },
+      })
+        .populate("host", "name displayName display_name email stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted")
+        .populate("explorer", "name displayName display_name email")
+        .populate("experience", "title city country startsAt startDate status isActive")
+        .sort({ payoutEligibleAt: 1 })
+        .limit(50)
+        .lean(),
+    ]);
+
+    const refundFailedBookingIds = refundFailedBookingsRaw.map((b) => b._id);
+    const payoutCandidateIds = payoutCandidateBookingsRaw.map((b) => b._id);
+    const disputedPaymentBookingIds = disputedPaymentsRaw.map((p) => p.booking).filter(Boolean);
+    const allBookingIds = [
+      ...refundFailedBookingIds,
+      ...payoutCandidateIds,
+      ...disputedPaymentBookingIds,
+    ].filter(Boolean);
+
+    const relatedPayments = allBookingIds.length
+      ? await Payment.find({ booking: { $in: allBookingIds } })
+          .select("booking status paymentType totalAmount amount currency stripePaymentIntentId stripeSessionId createdAt updatedAt")
+          .sort({ updatedAt: -1, createdAt: -1 })
+          .lean()
+      : [];
+
+    const paymentByBooking = new Map();
+    for (const p of relatedPayments) {
+      const key = String(p.booking);
+      if (!paymentByBooking.has(key)) {
+        paymentByBooking.set(key, {
+          status: p.status || "",
+          paymentType: p.paymentType || "",
+          amount: Number(p.totalAmount || p.amount || 0),
+          currency: p.currency || "ron",
+          hasStripePaymentIntent: !!p.stripePaymentIntentId,
+          stripeSessionId: p.stripeSessionId || null,
+        });
+      }
+    }
+
+    const disputedPaymentItems = await (async () => {
+      const bookingIds = disputedPaymentsRaw.map((p) => p.booking).filter(Boolean);
+      const bookings = bookingIds.length
+        ? await Booking.find({ _id: { $in: bookingIds } })
+            .populate("host", "name displayName display_name email stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted")
+            .populate("explorer", "name displayName display_name email")
+            .populate("experience", "title city country startsAt startDate status isActive")
+            .lean()
+        : [];
+      const bookingMap = new Map(bookings.map((b) => [String(b._id), b]));
+
+      return disputedPaymentsRaw.map((p) => {
+        const b = bookingMap.get(String(p.booking));
+        if (!b) {
+          return {
+            paymentId: String(p._id),
+            bookingId: p.booking ? String(p.booking) : null,
+            status: p.status || "",
+            paymentType: p.paymentType || "",
+            amount: Number(p.totalAmount || p.amount || 0),
+            currency: p.currency || "ron",
+            createdAt: p.createdAt || null,
+            updatedAt: p.updatedAt || null,
+            booking: null,
+          };
+        }
+        return {
+          paymentId: String(p._id),
+          bookingId: String(b._id),
+          status: p.status || "",
+          paymentType: p.paymentType || "",
+          amount: Number(p.totalAmount || p.amount || 0),
+          currency: p.currency || "ron",
+          createdAt: p.createdAt || null,
+          updatedAt: p.updatedAt || null,
+          booking: serializeAdminPaymentIssueBooking(b, {
+            payment: paymentByBooking.get(String(b._id)) || null,
+            issueReason: "DISPUTE",
+          }),
+        };
+      });
+    })();
+
+    const payoutAttentionBookings = payoutCandidateBookingsRaw
+      .map((b) => {
+        const host = b.host || null;
+        const issues = [];
+        if (!host?.stripeAccountId) issues.push("HOST_NO_STRIPE_ACCOUNT");
+        if (host?.stripeAccountId && !host?.isStripeDetailsSubmitted) issues.push("STRIPE_DETAILS_INCOMPLETE");
+        if (host?.stripeAccountId && !host?.isStripeChargesEnabled) issues.push("STRIPE_CHARGES_DISABLED");
+        if (host?.stripeAccountId && !host?.isStripePayoutsEnabled) issues.push("STRIPE_PAYOUTS_DISABLED");
+        if (!issues.length) return null;
+        return serializeAdminPaymentIssueBooking(b, {
+          payment: paymentByBooking.get(String(b._id)) || null,
+          issueReason: issues.join(","),
+        });
+      })
+      .filter(Boolean)
+      .slice(0, 20);
+    const payoutAttentionCount = Number(payoutAttentionCountAgg?.[0]?.count || 0);
+
+    const stripeOnboardingIncompleteHosts = stripeIncompleteHostsRaw.map((u) => ({
+      ...serializeAdminPaymentsHost(u),
+      issues: [
+        !u.stripeAccountId ? "NO_ACCOUNT" : null,
+        u.stripeAccountId && !u.isStripeDetailsSubmitted ? "DETAILS_INCOMPLETE" : null,
+        u.stripeAccountId && !u.isStripeChargesEnabled ? "CHARGES_DISABLED" : null,
+        u.stripeAccountId && !u.isStripePayoutsEnabled ? "PAYOUTS_DISABLED" : null,
+      ].filter(Boolean),
+    }));
+
+    const refundFailedBookings = refundFailedBookingsRaw.map((b) =>
+      serializeAdminPaymentIssueBooking(b, {
+        payment: paymentByBooking.get(String(b._id)) || null,
+        issueReason: "REFUND_FAILED",
+      })
+    );
+
+    return res.json({
+      generatedAt: now.toISOString(),
+      summary: {
+        refundFailedBookings: refundFailedCount,
+        refundFailedLast7d: refundFailedRecentCount,
+        disputedPayments: disputedPaymentsCount,
+        stripeOnboardingIncompleteHosts: hostsStripeIncompleteCount,
+        stripeMissingAccountHosts: hostsStripeMissingAccountCount,
+        payoutEligibleBookings: eligiblePayoutBookingsCount,
+        payoutAttentionBookings: payoutAttentionCount,
+      },
+      refundFailedBookings,
+      stripeOnboardingIncompleteHosts,
+      payoutAttentionBookings,
+      disputedPayments: disputedPaymentItems,
+    });
+  } catch (err) {
+    console.error("Admin payments health error", err);
+    return res.status(500).json({ message: "Failed to load payments health" });
   }
 });
 

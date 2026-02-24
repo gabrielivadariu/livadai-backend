@@ -91,11 +91,24 @@ Fields (MVP):
     - `PAUSE_EXPERIENCE` (reason required)
     - `SUSPEND_USER` (reason required)
 
+### Payments & Refunds
+
+- `GET /admin/payments/health`
+  - summary KPIs:
+    - refund failed bookings
+    - disputes
+    - Stripe onboarding incomplete hosts
+    - payout attention (eligible payout but host Stripe issues)
+  - lists:
+    - `refundFailedBookings`
+    - `stripeOnboardingIncompleteHosts`
+    - `payoutAttentionBookings`
+    - `disputedPayments`
+
 ### Media Ops
 
 - `GET /admin/media/stats`
 
 ## Next planned tabs
 
-- `/admin/payments`
 - audit log full table + filters
