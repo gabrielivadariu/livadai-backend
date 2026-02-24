@@ -6,18 +6,22 @@ const Experience = require("../models/experience.model");
 const Report = require("../models/report.model");
 const Payment = require("../models/payment.model");
 const MediaDeletionLog = require("../models/mediaDeletionLog.model");
+const AdminAuditLog = require("../models/adminAuditLog.model");
 const stripe = require("../config/stripe");
 const { createNotification } = require("../controllers/notifications.controller");
 const { recalcTrustedParticipant } = require("../utils/trust");
 const { sendEmail } = require("../utils/mailer");
 const { buildBookingCancelledEmail } = require("../utils/emailTemplates");
-const { authenticate, authorize } = require("../middleware/auth.middleware");
+const { authenticate, authorize, requireAdminAllowlist } = require("../middleware/auth.middleware");
 
 const router = Router();
 const cleanupActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "PENDING_ATTENDANCE", "DISPUTED"];
 const adminBookingActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "DISPUTED"];
 const adminParticipantStatuses = ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "COMPLETED", "AUTO_COMPLETED"];
 const allowedUserRoles = ["EXPLORER", "HOST", "ADMIN", "BOTH"];
+const adminRateLimitState = new Map();
+const ADMIN_RATE_LIMIT_WINDOW_MS = Number(process.env.ADMIN_RATE_LIMIT_WINDOW_MS || 60_000);
+const ADMIN_RATE_LIMIT_MAX = Number(process.env.ADMIN_RATE_LIMIT_MAX || 240);
 
 const hasExperienceMedia = (exp) =>
   !!(
@@ -72,6 +76,41 @@ const logAction = (action, bookingId) => {
   console.log(`[ADMIN_ACTION] ${new Date().toISOString()} action=${action} booking=${bookingId || "n/a"}`);
 };
 
+const getRequestIp = (req) => {
+  const xfwd = req.headers["x-forwarded-for"];
+  if (typeof xfwd === "string" && xfwd.trim()) {
+    return xfwd.split(",")[0].trim();
+  }
+  return req.ip || req.socket?.remoteAddress || "";
+};
+
+const adminRateLimit = (req, res, next) => {
+  const now = Date.now();
+  const key = `${req.user?.id || "anon"}:${getRequestIp(req)}`;
+  const row = adminRateLimitState.get(key);
+
+  if (!row || now - row.windowStart > ADMIN_RATE_LIMIT_WINDOW_MS) {
+    adminRateLimitState.set(key, { windowStart: now, count: 1 });
+    return next();
+  }
+
+  row.count += 1;
+  adminRateLimitState.set(key, row);
+
+  if (row.count > ADMIN_RATE_LIMIT_MAX) {
+    return res.status(429).json({ message: "Too many admin requests" });
+  }
+  return next();
+};
+
+const requireReason = (req, res, next) => {
+  const method = String(req.method || "").toUpperCase();
+  if (!["PATCH", "POST", "PUT", "DELETE"].includes(method)) return next();
+  const reason = String(req.body?.reason || "").trim();
+  req.adminReason = reason;
+  return next();
+};
+
 const parseBoolFilter = (value) => {
   if (value === undefined || value === null || value === "" || value === "all") return undefined;
   if (value === true || value === "true" || value === "1") return true;
@@ -86,6 +125,21 @@ const clampLimit = (value, fallback = 20, max = 100) => {
 };
 
 const escapeRegex = (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const writeAdminAuditLog = async (req, payload = {}) => {
+  try {
+    if (!req.user?.id || !req.user?.email) return;
+    await AdminAuditLog.create({
+      actorId: req.user.id,
+      actorEmail: req.user.email,
+      ip: getRequestIp(req),
+      userAgent: String(req.headers["user-agent"] || ""),
+      ...payload,
+    });
+  } catch (err) {
+    console.error("Admin audit log write error", err);
+  }
+};
 
 const serializeAdminUser = (user) => ({
   id: String(user._id),
@@ -443,7 +497,10 @@ router.get("/report-action", async (req, res) => {
 
 router.post("/report-action", handleAction);
 
-router.get("/dashboard", authenticate, authorize(["ADMIN"]), async (_req, res) => {
+// All session-based admin routes below require auth + ADMIN role + founder allowlist.
+router.use(authenticate, authorize(["ADMIN"]), requireAdminAllowlist, adminRateLimit, requireReason);
+
+router.get("/dashboard", async (_req, res) => {
   try {
     const now = new Date();
 
@@ -524,7 +581,33 @@ router.get("/dashboard", authenticate, authorize(["ADMIN"]), async (_req, res) =
   }
 });
 
-router.get("/users", authenticate, authorize(["ADMIN"]), async (req, res) => {
+router.get("/audit-logs/recent", async (req, res) => {
+  try {
+    const limit = clampLimit(req.query.limit, 10, 50);
+    const rows = await AdminAuditLog.find({})
+      .select("actorEmail actionType targetType targetId reason createdAt")
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    return res.json({
+      items: rows.map((row) => ({
+        id: String(row._id),
+        actorEmail: row.actorEmail || "",
+        actionType: row.actionType || "",
+        targetType: row.targetType || "",
+        targetId: row.targetId || "",
+        reason: row.reason || "",
+        createdAt: row.createdAt,
+      })),
+    });
+  } catch (err) {
+    console.error("Admin audit recent error", err);
+    return res.status(500).json({ message: "Failed to load recent admin actions" });
+  }
+});
+
+router.get("/users", async (req, res) => {
   try {
     const q = String(req.query.q || "").trim();
     const role = String(req.query.role || "").trim().toUpperCase();
@@ -579,7 +662,7 @@ router.get("/users", authenticate, authorize(["ADMIN"]), async (req, res) => {
   }
 });
 
-router.patch("/users/:id", authenticate, authorize(["ADMIN"]), async (req, res) => {
+router.patch("/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
     if (!id || !id.match(/^[a-f\d]{24}$/i)) {
@@ -587,29 +670,71 @@ router.patch("/users/:id", authenticate, authorize(["ADMIN"]), async (req, res) 
     }
 
     const { role, isBlocked, isBanned, invalidateSessions } = req.body || {};
+    const reason = String(req.adminReason || req.body?.reason || "").trim();
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ message: "User not found" });
+    const before = {
+      role: user.role,
+      isHost: !!user.isHost,
+      isBlocked: !!user.isBlocked,
+      isBanned: !!user.isBanned,
+      tokenVersion: user.tokenVersion || 0,
+    };
+    const diff = {};
 
     if (typeof role === "string") {
       const nextRole = role.toUpperCase();
       if (!allowedUserRoles.includes(nextRole)) {
         return res.status(400).json({ message: "Invalid role" });
       }
+      if (user.role !== nextRole) {
+        diff.role = { from: user.role, to: nextRole };
+      }
       user.role = nextRole;
       user.isHost = nextRole === "HOST" || nextRole === "BOTH";
     }
     if (typeof isBlocked === "boolean") {
+      if (!!user.isBlocked !== isBlocked) {
+        diff.isBlocked = { from: !!user.isBlocked, to: isBlocked };
+      }
       user.isBlocked = isBlocked;
     }
     if (typeof isBanned === "boolean") {
+      if (!!user.isBanned !== isBanned) {
+        diff.isBanned = { from: !!user.isBanned, to: isBanned };
+      }
       user.isBanned = isBanned;
       if (isBanned) user.isBlocked = true;
     }
     if (invalidateSessions === true) {
+      diff.tokenVersion = { from: user.tokenVersion || 0, to: (user.tokenVersion || 0) + 1 };
       user.tokenVersion = (user.tokenVersion || 0) + 1;
     }
 
+    const criticalUserAction = typeof isBlocked === "boolean" || typeof isBanned === "boolean";
+    if (criticalUserAction && !reason) {
+      return res.status(400).json({ message: "Reason is required for block/ban actions" });
+    }
+
     await user.save();
+    await writeAdminAuditLog(req, {
+      actionType:
+        typeof isBanned === "boolean"
+          ? isBanned
+            ? "USER_BAN"
+            : "USER_UNBAN"
+          : typeof isBlocked === "boolean"
+            ? isBlocked
+              ? "USER_BLOCK"
+              : "USER_UNBLOCK"
+            : invalidateSessions === true
+              ? "USER_INVALIDATE_SESSIONS"
+              : "USER_UPDATE",
+      targetType: "user",
+      targetId: String(user._id),
+      reason: reason || undefined,
+      diff: Object.keys(diff).length ? diff : { before },
+    });
     return res.json({ message: "User updated", user: serializeAdminUser(user) });
   } catch (err) {
     console.error("Admin user update error", err);
@@ -617,7 +742,7 @@ router.patch("/users/:id", authenticate, authorize(["ADMIN"]), async (req, res) 
   }
 });
 
-router.get("/experiences", authenticate, authorize(["ADMIN"]), async (req, res) => {
+router.get("/experiences", async (req, res) => {
   try {
     const q = String(req.query.q || "").trim();
     const status = String(req.query.status || "").trim();
@@ -682,19 +807,33 @@ router.get("/experiences", authenticate, authorize(["ADMIN"]), async (req, res) 
   }
 });
 
-router.patch("/experiences/:id", authenticate, authorize(["ADMIN"]), async (req, res) => {
+router.patch("/experiences/:id", async (req, res) => {
   try {
     const { id } = req.params;
     if (!id || !id.match(/^[a-f\d]{24}$/i)) {
       return res.status(400).json({ message: "Invalid experience id" });
     }
     const { isActive, status } = req.body || {};
+    const reason = String(req.adminReason || req.body?.reason || "").trim();
     const exp = await Experience.findById(id).populate("host", "name displayName display_name email");
     if (!exp) return res.status(404).json({ message: "Experience not found" });
+    const before = {
+      isActive: exp.isActive !== false,
+      status: exp.status || "",
+      soldOut: !!exp.soldOut,
+      remainingSpots: Number(exp.remainingSpots ?? 0),
+    };
+    const diff = {};
 
     if (typeof isActive === "boolean") {
+      if ((exp.isActive !== false) !== isActive) {
+        diff.isActive = { from: exp.isActive !== false, to: isActive };
+      }
       exp.isActive = isActive;
       if (!isActive) {
+        if (String(exp.status || "") !== "DISABLED") {
+          diff.status = { from: exp.status || "", to: "DISABLED" };
+        }
         exp.status = "DISABLED";
         exp.soldOut = true;
         exp.remainingSpots = 0;
@@ -713,10 +852,36 @@ router.patch("/experiences/:id", authenticate, authorize(["ADMIN"]), async (req,
       if (!["draft", "published", "cancelled", "CANCELLED", "DISABLED", "NO_BOOKINGS"].includes(nextStatus)) {
         return res.status(400).json({ message: "Invalid experience status" });
       }
+      if (String(exp.status || "") !== nextStatus) {
+        diff.status = { from: exp.status || "", to: nextStatus };
+      }
       exp.status = nextStatus;
     }
 
+    const criticalExperienceAction =
+      (typeof isActive === "boolean" && isActive === false) ||
+      ["cancelled", "CANCELLED", "DISABLED"].includes(String(status || "").trim());
+    if (criticalExperienceAction && !reason) {
+      return res.status(400).json({ message: "Reason is required for disable/cancel actions" });
+    }
+
     await exp.save();
+    await writeAdminAuditLog(req, {
+      actionType:
+        typeof isActive === "boolean" && isActive === false
+          ? "EXPERIENCE_DISABLE"
+          : typeof isActive === "boolean" && isActive === true
+            ? "EXPERIENCE_ENABLE"
+            : "EXPERIENCE_UPDATE",
+      targetType: "experience",
+      targetId: String(exp._id),
+      reason: reason || undefined,
+      diff: Object.keys(diff).length ? diff : { before },
+      meta: {
+        hostId: exp.host?._id ? String(exp.host._id) : undefined,
+        hostEmail: exp.host?.email || undefined,
+      },
+    });
     return res.json({ message: "Experience updated", experience: serializeAdminExperience(exp.toObject ? exp.toObject() : exp) });
   } catch (err) {
     console.error("Admin experience update error", err);
@@ -724,7 +889,7 @@ router.patch("/experiences/:id", authenticate, authorize(["ADMIN"]), async (req,
   }
 });
 
-router.get("/media/stats", authenticate, authorize(["ADMIN"]), async (_req, res) => {
+router.get("/media/stats", async (_req, res) => {
   try {
     const now = new Date();
     const retentionHours = Number(process.env.MEDIA_RETENTION_HOURS || 72);

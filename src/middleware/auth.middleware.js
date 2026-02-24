@@ -93,4 +93,33 @@ const authorize = (roles = []) => (req, res, next) => {
   return next();
 };
 
-module.exports = { authenticate, optionalAuthenticate, authorize, requireRecentAuth };
+const getAdminAllowedEmails = () =>
+  new Set(
+    String(process.env.ADMIN_ALLOWED_EMAILS || "")
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+const requireAdminAllowlist = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ message: "Authorization required" });
+  }
+  if (req.user.role !== "ADMIN") {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+
+  const allowedEmails = getAdminAllowedEmails();
+  if (!allowedEmails.size) {
+    return res.status(503).json({ message: "Admin allowlist not configured" });
+  }
+
+  const email = String(req.user.email || "").trim().toLowerCase();
+  if (!email || !allowedEmails.has(email)) {
+    return res.status(403).json({ message: "Admin access denied" });
+  }
+
+  return next();
+};
+
+module.exports = { authenticate, optionalAuthenticate, authorize, requireRecentAuth, requireAdminAllowlist };
