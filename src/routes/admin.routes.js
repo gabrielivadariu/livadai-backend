@@ -15,6 +15,9 @@ const { authenticate, authorize } = require("../middleware/auth.middleware");
 
 const router = Router();
 const cleanupActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "PENDING_ATTENDANCE", "DISPUTED"];
+const adminBookingActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "DISPUTED"];
+const adminParticipantStatuses = ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "COMPLETED", "AUTO_COMPLETED"];
+const allowedUserRoles = ["EXPLORER", "HOST", "ADMIN", "BOTH"];
 
 const hasExperienceMedia = (exp) =>
   !!(
@@ -68,6 +71,63 @@ const verifyToken = (token) => {
 const logAction = (action, bookingId) => {
   console.log(`[ADMIN_ACTION] ${new Date().toISOString()} action=${action} booking=${bookingId || "n/a"}`);
 };
+
+const parseBoolFilter = (value) => {
+  if (value === undefined || value === null || value === "" || value === "all") return undefined;
+  if (value === true || value === "true" || value === "1") return true;
+  if (value === false || value === "false" || value === "0") return false;
+  return undefined;
+};
+
+const clampLimit = (value, fallback = 20, max = 100) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(Math.floor(parsed), max);
+};
+
+const escapeRegex = (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const serializeAdminUser = (user) => ({
+  id: String(user._id),
+  name: user.name || "",
+  displayName: user.displayName || user.display_name || user.name || "",
+  email: user.email || "",
+  role: user.role,
+  isBlocked: !!user.isBlocked,
+  isBanned: !!user.isBanned,
+  emailVerified: !!user.emailVerified,
+  createdAt: user.createdAt,
+  updatedAt: user.updatedAt,
+  city: user.city || "",
+  country: user.country || "",
+  stripeConnected: !!user.stripeAccountId,
+});
+
+const serializeAdminExperience = (exp, participantsByExperience = new Map()) => ({
+  id: String(exp._id),
+  title: exp.title || "",
+  status: exp.status || "",
+  isActive: exp.isActive !== false,
+  price: typeof exp.price === "number" ? exp.price : 0,
+  environment: exp.environment || null,
+  city: exp.city || exp.location?.city || "",
+  country: exp.country || exp.location?.country || "",
+  startsAt: exp.startsAt || exp.startDate || null,
+  endsAt: exp.endsAt || exp.endDate || null,
+  maxParticipants: exp.maxParticipants ?? 0,
+  remainingSpots: exp.remainingSpots ?? 0,
+  soldOut: !!exp.soldOut,
+  createdAt: exp.createdAt,
+  updatedAt: exp.updatedAt,
+  host: exp.host
+    ? {
+        id: String(exp.host._id || exp.host),
+        name: exp.host.displayName || exp.host.display_name || exp.host.name || "",
+        email: exp.host.email || "",
+      }
+    : null,
+  participantsBooked: participantsByExperience.get(String(exp._id)) || 0,
+});
 
 const refundBooking = async (booking, reason = "Admin action") => {
   try {
@@ -382,6 +442,287 @@ router.get("/report-action", async (req, res) => {
 });
 
 router.post("/report-action", handleAction);
+
+router.get("/dashboard", authenticate, authorize(["ADMIN"]), async (_req, res) => {
+  try {
+    const now = new Date();
+
+    const [
+      usersTotal,
+      explorersOnly,
+      hostsOnly,
+      bothRole,
+      admins,
+      blockedUsers,
+      bannedUsers,
+      experiencesTotal,
+      experiencesActive,
+      experiencesInactive,
+      experiencesUpcomingPublic,
+      bookingsTotal,
+      bookingsActive,
+      bookingsRefundFailed,
+      reportsOpen,
+      reportsPending,
+      recentUsers,
+      recentExperiences,
+    ] = await Promise.all([
+      User.countDocuments({}),
+      User.countDocuments({ role: "EXPLORER" }),
+      User.countDocuments({ role: "HOST" }),
+      User.countDocuments({ role: "BOTH" }),
+      User.countDocuments({ role: "ADMIN" }),
+      User.countDocuments({ isBlocked: true }),
+      User.countDocuments({ isBanned: true }),
+      Experience.countDocuments({}),
+      Experience.countDocuments({ isActive: true }),
+      Experience.countDocuments({ isActive: false }),
+      Experience.countDocuments({ isActive: true, startsAt: { $gt: now } }),
+      Booking.countDocuments({}),
+      Booking.countDocuments({ status: { $in: adminBookingActiveStatuses } }),
+      Booking.countDocuments({ status: "REFUND_FAILED" }),
+      Report.countDocuments({ status: "OPEN" }),
+      Report.countDocuments({ status: { $in: ["OPEN", "HANDLED"] } }),
+      User.countDocuments({ createdAt: { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) } }),
+      Experience.countDocuments({ createdAt: { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) } }),
+    ]);
+
+    return res.json({
+      generatedAt: now.toISOString(),
+      users: {
+        total: usersTotal,
+        explorersOnly,
+        hostsOnly,
+        bothRole,
+        admins,
+        hostCapable: hostsOnly + bothRole,
+        explorerCapable: explorersOnly + bothRole,
+        blocked: blockedUsers,
+        banned: bannedUsers,
+        newLast7d: recentUsers,
+      },
+      experiences: {
+        total: experiencesTotal,
+        active: experiencesActive,
+        inactive: experiencesInactive,
+        upcomingPublic: experiencesUpcomingPublic,
+        newLast7d: recentExperiences,
+      },
+      bookings: {
+        total: bookingsTotal,
+        active: bookingsActive,
+        refundFailed: bookingsRefundFailed,
+      },
+      reports: {
+        open: reportsOpen,
+        openOrHandled: reportsPending,
+      },
+    });
+  } catch (err) {
+    console.error("Admin dashboard error", err);
+    return res.status(500).json({ message: "Failed to load admin dashboard" });
+  }
+});
+
+router.get("/users", authenticate, authorize(["ADMIN"]), async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const role = String(req.query.role || "").trim().toUpperCase();
+    const status = String(req.query.status || "all").trim().toLowerCase();
+    const limit = clampLimit(req.query.limit, 20, 100);
+    const page = Math.max(1, Number(req.query.page || 1) || 1);
+    const skip = (page - 1) * limit;
+
+    const filter = {};
+
+    if (q) {
+      const safe = escapeRegex(q);
+      filter.$or = [
+        { name: { $regex: safe, $options: "i" } },
+        { displayName: { $regex: safe, $options: "i" } },
+        { display_name: { $regex: safe, $options: "i" } },
+        { email: { $regex: safe, $options: "i" } },
+      ];
+    }
+
+    if (allowedUserRoles.includes(role)) {
+      filter.role = role;
+    }
+
+    if (status === "blocked") filter.isBlocked = true;
+    if (status === "banned") filter.isBanned = true;
+    if (status === "active") {
+      filter.isBlocked = { $ne: true };
+      filter.isBanned = { $ne: true };
+    }
+
+    const [total, rows] = await Promise.all([
+      User.countDocuments(filter),
+      User.find(filter)
+        .select("name displayName display_name email role isBlocked isBanned emailVerified city country stripeAccountId tokenVersion createdAt updatedAt")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    return res.json({
+      page,
+      limit,
+      total,
+      pages: Math.max(1, Math.ceil(total / limit)),
+      items: rows.map(serializeAdminUser),
+    });
+  } catch (err) {
+    console.error("Admin users list error", err);
+    return res.status(500).json({ message: "Failed to load users" });
+  }
+});
+
+router.patch("/users/:id", authenticate, authorize(["ADMIN"]), async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id || !id.match(/^[a-f\d]{24}$/i)) {
+      return res.status(400).json({ message: "Invalid user id" });
+    }
+
+    const { role, isBlocked, isBanned, invalidateSessions } = req.body || {};
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (typeof role === "string") {
+      const nextRole = role.toUpperCase();
+      if (!allowedUserRoles.includes(nextRole)) {
+        return res.status(400).json({ message: "Invalid role" });
+      }
+      user.role = nextRole;
+      user.isHost = nextRole === "HOST" || nextRole === "BOTH";
+    }
+    if (typeof isBlocked === "boolean") {
+      user.isBlocked = isBlocked;
+    }
+    if (typeof isBanned === "boolean") {
+      user.isBanned = isBanned;
+      if (isBanned) user.isBlocked = true;
+    }
+    if (invalidateSessions === true) {
+      user.tokenVersion = (user.tokenVersion || 0) + 1;
+    }
+
+    await user.save();
+    return res.json({ message: "User updated", user: serializeAdminUser(user) });
+  } catch (err) {
+    console.error("Admin user update error", err);
+    return res.status(500).json({ message: "Failed to update user" });
+  }
+});
+
+router.get("/experiences", authenticate, authorize(["ADMIN"]), async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const status = String(req.query.status || "").trim();
+    const active = parseBoolFilter(req.query.active);
+    const limit = clampLimit(req.query.limit, 20, 100);
+    const page = Math.max(1, Number(req.query.page || 1) || 1);
+    const skip = (page - 1) * limit;
+
+    const filter = {};
+    if (typeof active === "boolean") filter.isActive = active;
+    if (status && status !== "all") filter.status = status;
+    if (q) {
+      const safe = escapeRegex(q);
+      filter.$or = [
+        { title: { $regex: safe, $options: "i" } },
+        { city: { $regex: safe, $options: "i" } },
+        { country: { $regex: safe, $options: "i" } },
+        { address: { $regex: safe, $options: "i" } },
+      ];
+    }
+
+    const [total, rows] = await Promise.all([
+      Experience.countDocuments(filter),
+      Experience.find(filter)
+        .select("host title status isActive price environment city country startsAt endsAt startDate endDate maxParticipants remainingSpots soldOut createdAt updatedAt")
+        .populate("host", "name displayName display_name email")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    const ids = rows.map((r) => r._id);
+    const bookingsAgg = ids.length
+      ? await Booking.aggregate([
+          {
+            $match: {
+              experience: { $in: ids },
+              status: { $in: adminParticipantStatuses },
+            },
+          },
+          {
+            $group: {
+              _id: "$experience",
+              participants: { $sum: { $ifNull: ["$quantity", 1] } },
+            },
+          },
+        ])
+      : [];
+    const participantsByExperience = new Map(bookingsAgg.map((row) => [String(row._id), Number(row.participants || 0)]));
+
+    return res.json({
+      page,
+      limit,
+      total,
+      pages: Math.max(1, Math.ceil(total / limit)),
+      items: rows.map((row) => serializeAdminExperience(row, participantsByExperience)),
+    });
+  } catch (err) {
+    console.error("Admin experiences list error", err);
+    return res.status(500).json({ message: "Failed to load experiences" });
+  }
+});
+
+router.patch("/experiences/:id", authenticate, authorize(["ADMIN"]), async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id || !id.match(/^[a-f\d]{24}$/i)) {
+      return res.status(400).json({ message: "Invalid experience id" });
+    }
+    const { isActive, status } = req.body || {};
+    const exp = await Experience.findById(id).populate("host", "name displayName display_name email");
+    if (!exp) return res.status(404).json({ message: "Experience not found" });
+
+    if (typeof isActive === "boolean") {
+      exp.isActive = isActive;
+      if (!isActive) {
+        exp.status = "DISABLED";
+        exp.soldOut = true;
+        exp.remainingSpots = 0;
+      } else {
+        if (String(exp.status).toUpperCase() === "DISABLED") {
+          exp.status = "published";
+        }
+        const max = Number(exp.maxParticipants || 0);
+        const rem = Number(exp.remainingSpots || 0);
+        exp.soldOut = max > 0 ? rem <= 0 : false;
+      }
+    }
+
+    if (typeof status === "string" && status.trim()) {
+      const nextStatus = status.trim();
+      if (!["draft", "published", "cancelled", "CANCELLED", "DISABLED", "NO_BOOKINGS"].includes(nextStatus)) {
+        return res.status(400).json({ message: "Invalid experience status" });
+      }
+      exp.status = nextStatus;
+    }
+
+    await exp.save();
+    return res.json({ message: "Experience updated", experience: serializeAdminExperience(exp.toObject ? exp.toObject() : exp) });
+  } catch (err) {
+    console.error("Admin experience update error", err);
+    return res.status(500).json({ message: "Failed to update experience" });
+  }
+});
 
 router.get("/media/stats", authenticate, authorize(["ADMIN"]), async (_req, res) => {
   try {
