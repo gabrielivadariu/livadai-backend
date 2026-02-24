@@ -62,6 +62,10 @@ Fields (MVP):
 ### Experiences
 
 - `GET /admin/experiences?q=&active=&status=&page=&limit=`
+- `POST /admin/experiences/bulk-action`
+  - body: `{ action: "PAUSE" | "UNPAUSE", ids: string[], reason?: string }`
+  - max 100 ids / request
+  - `reason` required for `PAUSE`
 - `GET /admin/experiences/:id`
   - experience details + media preview data + counts + recent bookings/reports + timeline + recent audit
 - `PATCH /admin/experiences/:id`

@@ -1326,6 +1326,138 @@ router.get("/experiences", async (req, res) => {
   }
 });
 
+router.post("/experiences/bulk-action", async (req, res) => {
+  try {
+    const action = String(req.body?.action || "").trim().toUpperCase();
+    const idsRaw = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const reason = String(req.adminReason || req.body?.reason || "").trim();
+
+    const ids = [...new Set(idsRaw.map((id) => String(id || "").trim()).filter(Boolean))];
+    if (!ids.length) {
+      return res.status(400).json({ message: "No experience ids provided" });
+    }
+    if (ids.length > 100) {
+      return res.status(400).json({ message: "Bulk action limit is 100 experiences" });
+    }
+    if (!["PAUSE", "UNPAUSE"].includes(action)) {
+      return res.status(400).json({ message: "Invalid bulk action" });
+    }
+    if (action === "PAUSE" && !reason) {
+      return res.status(400).json({ message: "Reason is required for PAUSE" });
+    }
+
+    const invalidIds = ids.filter((id) => !isObjectIdLike(id));
+    if (invalidIds.length) {
+      return res.status(400).json({ message: "Invalid experience ids in payload", invalidIds });
+    }
+
+    const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
+    const experiences = await Experience.find({ _id: { $in: objectIds } }).populate("host", "email name displayName display_name");
+    const byId = new Map(experiences.map((exp) => [String(exp._id), exp]));
+    const batchId = `exp-bulk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const updated = [];
+    const skipped = [];
+
+    for (const id of ids) {
+      const exp = byId.get(id);
+      if (!exp) {
+        skipped.push({ id, reason: "NOT_FOUND" });
+        continue;
+      }
+
+      const before = {
+        isActive: exp.isActive !== false,
+        status: exp.status || "",
+        soldOut: !!exp.soldOut,
+        remainingSpots: Number(exp.remainingSpots ?? 0),
+      };
+      const diff = {};
+
+      if (action === "PAUSE") {
+        if (exp.isActive === false && String(exp.status || "").toUpperCase() === "DISABLED") {
+          skipped.push({ id, reason: "ALREADY_PAUSED" });
+          continue;
+        }
+        if ((exp.isActive !== false) !== false) diff.isActive = { from: exp.isActive !== false, to: false };
+        if (String(exp.status || "") !== "DISABLED") diff.status = { from: exp.status || "", to: "DISABLED" };
+        if (!!exp.soldOut !== true) diff.soldOut = { from: !!exp.soldOut, to: true };
+        if (Number(exp.remainingSpots ?? 0) !== 0) diff.remainingSpots = { from: Number(exp.remainingSpots ?? 0), to: 0 };
+
+        exp.isActive = false;
+        exp.status = "DISABLED";
+        exp.soldOut = true;
+        exp.remainingSpots = 0;
+      }
+
+      if (action === "UNPAUSE") {
+        const prevActive = exp.isActive !== false;
+        if (prevActive && String(exp.status || "").toUpperCase() !== "DISABLED") {
+          skipped.push({ id, reason: "ALREADY_ACTIVE" });
+          continue;
+        }
+        if (prevActive !== true) diff.isActive = { from: prevActive, to: true };
+        exp.isActive = true;
+        if (String(exp.status || "").toUpperCase() === "DISABLED") {
+          diff.status = { from: exp.status || "", to: "published" };
+          exp.status = "published";
+        }
+        const max = Number(exp.maxParticipants || 0);
+        const rem = Number(exp.remainingSpots || 0);
+        const nextSoldOut = max > 0 ? rem <= 0 : false;
+        if (!!exp.soldOut !== nextSoldOut) diff.soldOut = { from: !!exp.soldOut, to: nextSoldOut };
+        exp.soldOut = nextSoldOut;
+      }
+
+      await exp.save();
+      updated.push(String(exp._id));
+      await writeAdminAuditLog(req, {
+        actionType: action === "PAUSE" ? "EXPERIENCE_BULK_PAUSE" : "EXPERIENCE_BULK_UNPAUSE",
+        targetType: "experience",
+        targetId: String(exp._id),
+        reason: reason || undefined,
+        diff: Object.keys(diff).length ? diff : { before },
+        meta: {
+          batchId,
+          hostId: exp.host?._id ? String(exp.host._id) : undefined,
+          hostEmail: exp.host?.email || undefined,
+        },
+      });
+    }
+
+    await writeAdminAuditLog(req, {
+      actionType: action === "PAUSE" ? "EXPERIENCE_BULK_PAUSE_SUMMARY" : "EXPERIENCE_BULK_UNPAUSE_SUMMARY",
+      targetType: "experience_bulk",
+      targetId: batchId,
+      reason: reason || undefined,
+      diff: {
+        idsRequested: ids.length,
+        updatedCount: updated.length,
+        skippedCount: skipped.length,
+      },
+      meta: {
+        ids,
+        updated,
+        skipped,
+      },
+    });
+
+    return res.json({
+      message: "Bulk action completed",
+      action,
+      batchId,
+      requestedCount: ids.length,
+      updatedCount: updated.length,
+      skippedCount: skipped.length,
+      updatedIds: updated,
+      skipped,
+    });
+  } catch (err) {
+    console.error("Admin experiences bulk action error", err);
+    return res.status(500).json({ message: "Failed to run experience bulk action" });
+  }
+});
+
 router.get("/experiences/:id", async (req, res) => {
   try {
     const { id } = req.params;
