@@ -47,6 +47,8 @@ Fields (MVP):
 
 - `GET /admin/audit-logs/recent?limit=12`
   - latest admin actions (topbar / quick monitoring)
+- `GET /admin/audit-logs?q=&actionType=&targetType=&actorEmail=&from=&to=&page=&limit=`
+  - full audit list with filters and diff/meta payloads
 
 ### Users
 
@@ -111,4 +113,5 @@ Fields (MVP):
 
 ## Next planned tabs
 
-- audit log full table + filters
+- `/admin/messages`
+- `/admin/system`

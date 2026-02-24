@@ -798,6 +798,95 @@ router.get("/audit-logs/recent", async (req, res) => {
   }
 });
 
+router.get("/audit-logs", async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const actionType = String(req.query.actionType || "").trim().toUpperCase();
+    const targetType = String(req.query.targetType || "").trim().toLowerCase();
+    const actorEmail = String(req.query.actorEmail || "").trim();
+    const from = String(req.query.from || "").trim();
+    const to = String(req.query.to || "").trim();
+    const limit = clampLimit(req.query.limit, 20, 100);
+    const page = Math.max(1, Number(req.query.page || 1) || 1);
+    const skip = (page - 1) * limit;
+
+    const filter = {};
+
+    if (actionType && actionType !== "ALL") {
+      filter.actionType = actionType;
+    }
+    if (targetType && targetType !== "all") {
+      filter.targetType = targetType;
+    }
+    if (actorEmail) {
+      filter.actorEmail = { $regex: escapeRegex(actorEmail), $options: "i" };
+    }
+
+    const createdAt = {};
+    if (from) {
+      const d = new Date(from);
+      if (!Number.isNaN(d.getTime())) createdAt.$gte = d;
+    }
+    if (to) {
+      const d = new Date(to);
+      if (!Number.isNaN(d.getTime())) createdAt.$lte = new Date(d.getTime() + 24 * 60 * 60 * 1000 - 1);
+    }
+    if (Object.keys(createdAt).length) {
+      filter.createdAt = createdAt;
+    }
+
+    if (q) {
+      const safe = escapeRegex(q);
+      const or = [
+        { actorEmail: { $regex: safe, $options: "i" } },
+        { actionType: { $regex: safe, $options: "i" } },
+        { targetType: { $regex: safe, $options: "i" } },
+        { targetId: { $regex: safe, $options: "i" } },
+        { reason: { $regex: safe, $options: "i" } },
+      ];
+      if (filter.$or) {
+        filter.$and = [{ $or: filter.$or }, { $or: or }];
+        delete filter.$or;
+      } else {
+        filter.$or = or;
+      }
+    }
+
+    const [total, rows] = await Promise.all([
+      AdminAuditLog.countDocuments(filter),
+      AdminAuditLog.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    return res.json({
+      page,
+      limit,
+      total,
+      pages: Math.max(1, Math.ceil(total / limit)),
+      items: rows.map((row) => ({
+        id: String(row._id),
+        actorId: row.actorId ? String(row.actorId) : "",
+        actorEmail: row.actorEmail || "",
+        actionType: row.actionType || "",
+        targetType: row.targetType || "",
+        targetId: row.targetId || "",
+        reason: row.reason || "",
+        diff: row.diff || null,
+        meta: row.meta || null,
+        ip: row.ip || "",
+        userAgent: row.userAgent || "",
+        createdAt: row.createdAt || null,
+      })),
+    });
+  } catch (err) {
+    console.error("Admin audit logs list error", err);
+    return res.status(500).json({ message: "Failed to load audit logs" });
+  }
+});
+
 router.get("/users", async (req, res) => {
   try {
     const q = String(req.query.q || "").trim();
