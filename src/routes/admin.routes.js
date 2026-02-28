@@ -145,9 +145,22 @@ const writeAdminAuditLog = async (req, payload = {}) => {
   }
 };
 
+const splitName = (value = "") => {
+  const cleaned = String(value || "").trim().replace(/\s+/g, " ");
+  if (!cleaned) return { firstName: "", lastName: "" };
+  const parts = cleaned.split(" ");
+  if (parts.length === 1) return { firstName: parts[0], lastName: "" };
+  return {
+    firstName: parts[0],
+    lastName: parts.slice(1).join(" "),
+  };
+};
+
 const serializeAdminUser = (user) => ({
+  ...splitName(user.displayName || user.display_name || user.name || ""),
   id: String(user._id),
   name: user.name || "",
+  fullName: user.displayName || user.display_name || user.name || "",
   displayName: user.displayName || user.display_name || user.name || "",
   email: user.email || "",
   role: user.role,
@@ -158,6 +171,9 @@ const serializeAdminUser = (user) => ({
   updatedAt: user.updatedAt,
   city: user.city || "",
   country: user.country || "",
+  stripeAccountId: user.stripeAccountId || "",
+  isStripeChargesEnabled: !!user.isStripeChargesEnabled,
+  isStripePayoutsEnabled: !!user.isStripePayoutsEnabled,
   stripeConnected: !!user.stripeAccountId,
 });
 
@@ -909,7 +925,7 @@ router.get("/users", async (req, res) => {
     const q = String(req.query.q || "").trim();
     const role = String(req.query.role || "").trim().toUpperCase();
     const status = String(req.query.status || "all").trim().toLowerCase();
-    const limit = clampLimit(req.query.limit, 20, 100);
+    const limit = clampLimit(req.query.limit, 20, 20);
     const page = Math.max(1, Number(req.query.page || 1) || 1);
     const skip = (page - 1) * limit;
 
@@ -917,12 +933,7 @@ router.get("/users", async (req, res) => {
 
     if (q) {
       const safe = escapeRegex(q);
-      filter.$or = [
-        { name: { $regex: safe, $options: "i" } },
-        { displayName: { $regex: safe, $options: "i" } },
-        { display_name: { $regex: safe, $options: "i" } },
-        { email: { $regex: safe, $options: "i" } },
-      ];
+      filter.email = { $regex: safe, $options: "i" };
     }
 
     if (allowedUserRoles.includes(role)) {
@@ -936,14 +947,45 @@ router.get("/users", async (req, res) => {
       filter.isBanned = { $ne: true };
     }
 
-    const [total, rows] = await Promise.all([
+    const [total, rows, totalUsers, totalHosts, totalExplorers, hostsStripeIncomplete] = await Promise.all([
       User.countDocuments(filter),
       User.find(filter)
-        .select("name displayName display_name email role isBlocked isBanned emailVerified city country stripeAccountId tokenVersion createdAt updatedAt")
+        .select(
+          [
+            "name",
+            "displayName",
+            "display_name",
+            "email",
+            "role",
+            "isBlocked",
+            "isBanned",
+            "emailVerified",
+            "city",
+            "country",
+            "stripeAccountId",
+            "isStripeChargesEnabled",
+            "isStripePayoutsEnabled",
+            "tokenVersion",
+            "createdAt",
+            "updatedAt",
+          ].join(" ")
+        )
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
+      User.countDocuments({}),
+      User.countDocuments({ role: { $in: ["HOST", "BOTH"] } }),
+      User.countDocuments({ role: { $in: ["EXPLORER", "BOTH"] } }),
+      User.countDocuments({
+        role: { $in: ["HOST", "BOTH"] },
+        $or: [
+          { stripeAccountId: { $exists: false } },
+          { stripeAccountId: "" },
+          { isStripeChargesEnabled: { $ne: true } },
+          { isStripePayoutsEnabled: { $ne: true } },
+        ],
+      }),
     ]);
 
     return res.json({
@@ -951,6 +993,12 @@ router.get("/users", async (req, res) => {
       limit,
       total,
       pages: Math.max(1, Math.ceil(total / limit)),
+      summary: {
+        totalUsers,
+        totalHosts,
+        totalExplorers,
+        hostsStripeIncomplete,
+      },
       items: rows.map(serializeAdminUser),
     });
   } catch (err) {
