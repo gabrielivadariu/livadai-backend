@@ -2,6 +2,7 @@ const stripe = require("../config/stripe");
 const User = require("../models/user.model");
 const Transaction = require("../models/transaction.model");
 const { isPayoutEligible, logPayoutAttempt } = require("../utils/payout");
+const { syncHostComplianceSnapshot } = require("../utils/hostCompliance");
 
 const REFRESH_URL = process.env.FRONTEND_REFRESH_URL || "http://localhost:3000/stripe/refresh";
 const RETURN_URL = process.env.FRONTEND_RETURN_URL || "http://localhost:3000/stripe/success";
@@ -14,11 +15,17 @@ const createHostAccount = async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
 
+    const hostMetadata = {
+      livadaiUserId: String(user._id),
+      livadaiUserEmail: String(user.email || "").trim(),
+    };
     let accountId = user.stripeAccountId;
+    const createdNewAccount = !accountId;
     if (!accountId) {
       const account = await stripe.accounts.create({
         type: "express",
         email: user.email,
+        metadata: hostMetadata,
         capabilities: {
           card_payments: { requested: true },
           transfers: { requested: true },
@@ -30,6 +37,12 @@ const createHostAccount = async (req, res) => {
       user.isStripePayoutsEnabled = false;
       user.isStripeDetailsSubmitted = false;
       await user.save();
+    } else {
+      try {
+        await stripe.accounts.update(accountId, { metadata: hostMetadata });
+      } catch (err) {
+        console.error("Stripe metadata sync error", err?.message || err);
+      }
     }
 
     const accountLink = await stripe.accountLinks.create({
@@ -38,6 +51,17 @@ const createHostAccount = async (req, res) => {
       return_url: RETURN_URL,
       type: "account_onboarding",
     });
+
+    try {
+      await syncHostComplianceSnapshot({
+        userId: user._id,
+        stripeAccountId: accountId,
+        triggerType: createdNewAccount ? "host_account_created" : "host_account_link_opened",
+        metadata: { source: "createHostAccount" },
+      });
+    } catch (err) {
+      console.error("Host compliance snapshot sync error", err?.message || err);
+    }
 
     return res.json({ url: accountLink.url, stripeAccountId: accountId });
   } catch (err) {

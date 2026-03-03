@@ -18,6 +18,7 @@ const Booking = require("../models/booking.model");
 const Report = require("../models/report.model");
 const { handlePaymentSuccess } = require("../controllers/payment.controller");
 const WebhookEvent = require("../models/webhookEvent.model");
+const { syncHostComplianceSnapshot } = require("../utils/hostCompliance");
 
 const router = Router();
 const webhookRouter = Router();
@@ -65,6 +66,9 @@ webhookRouter.post(
         "charge.dispute.created",
         "charge.dispute.closed",
         "account.updated",
+        "account.external_account.created",
+        "account.external_account.updated",
+        "account.external_account.deleted",
       ]);
       if (!allowed.has(event.type)) {
         console.log("Ignored Stripe event:", event.type);
@@ -105,6 +109,42 @@ webhookRouter.post(
             details_submitted,
             userFound: !!updated,
           });
+          if (id) {
+            try {
+              await syncHostComplianceSnapshot({
+                stripeAccountId: id,
+                triggerType: "webhook",
+                triggerEventId: event.id,
+                triggerEventType: event.type,
+                metadata: { reason: "account_updated" },
+              });
+            } catch (err) {
+              console.error("Stripe compliance sync (account.updated) error", err?.message || err);
+            }
+          }
+          break;
+        }
+        case "account.external_account.created":
+        case "account.external_account.updated":
+        case "account.external_account.deleted": {
+          const externalAccount = event.data.object || {};
+          const accountId = String(externalAccount.account || "").trim();
+          if (accountId) {
+            try {
+              await syncHostComplianceSnapshot({
+                stripeAccountId: accountId,
+                triggerType: "webhook",
+                triggerEventId: event.id,
+                triggerEventType: event.type,
+                metadata: {
+                  reason: "external_account_changed",
+                  externalAccountId: String(externalAccount.id || ""),
+                },
+              });
+            } catch (err) {
+              console.error("Stripe compliance sync (external account) error", err?.message || err);
+            }
+          }
           break;
         }
         case "checkout.session.completed": {

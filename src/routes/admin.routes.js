@@ -9,9 +9,11 @@ const Payment = require("../models/payment.model");
 const Message = require("../models/message.model");
 const MediaDeletionLog = require("../models/mediaDeletionLog.model");
 const AdminAuditLog = require("../models/adminAuditLog.model");
+const HostComplianceSnapshot = require("../models/hostComplianceSnapshot.model");
 const stripe = require("../config/stripe");
 const { createNotification } = require("../controllers/notifications.controller");
 const { recalcTrustedParticipant } = require("../utils/trust");
+const { collectComplianceIssues } = require("../utils/hostCompliance");
 const { sendEmail } = require("../utils/mailer");
 const { buildBookingCancelledEmail } = require("../utils/emailTemplates");
 const { authenticate, authorize, requireAdminAllowlist } = require("../middleware/auth.middleware");
@@ -351,6 +353,31 @@ const serializeAdminPaymentsHost = (user) => ({
   totalParticipants: Number(user.total_participants || 0),
   createdAt: user.createdAt || null,
 });
+
+const serializeAdminComplianceHost = (user, snapshot = null) => {
+  const base = serializeAdminPaymentsHost(user);
+  const issues = collectComplianceIssues(snapshot);
+  const bankLast4 = String(snapshot?.bankLast4 || "");
+  const bankName = String(snapshot?.bankName || "");
+  const bankReference = bankLast4 ? `${bankName || "Bank"} • ****${bankLast4}` : "";
+  return {
+    ...base,
+    livadaiName: base.name || "",
+    stripeLegalName: String(snapshot?.stripeLegalName || ""),
+    stripeDisplayName: String(snapshot?.stripeDisplayName || ""),
+    stripeBusinessType: String(snapshot?.stripeBusinessType || ""),
+    nameMatchState: snapshot?.nameMatchState || "NO_SNAPSHOT",
+    bankName,
+    bankLast4,
+    bankCountry: String(snapshot?.bankCountry || ""),
+    bankCurrency: String(snapshot?.bankCurrency || ""),
+    bankReference,
+    requirementsDisabledReason: String(snapshot?.requirementsDisabledReason || ""),
+    requirementsCurrentlyDueCount: Number(snapshot?.requirementsCurrentlyDue?.length || 0),
+    snapshotAt: snapshot?.createdAt || null,
+    issues,
+  };
+};
 
 const serializeAdminPaymentIssueBooking = (booking, extras = {}) => ({
   id: String(booking._id),
@@ -2771,6 +2798,8 @@ router.get("/payments/health", async (_req, res) => {
       disputedPaymentsRaw,
       stripeIncompleteHostsRaw,
       payoutCandidateBookingsRaw,
+      hostsWithStripeAccountsRaw,
+      latestComplianceSnapshotsRaw,
     ] = await Promise.all([
       Booking.countDocuments({ status: "REFUND_FAILED" }),
       Booking.countDocuments({ status: "REFUND_FAILED", updatedAt: { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) } }),
@@ -2862,6 +2891,20 @@ router.get("/payments/health", async (_req, res) => {
         .sort({ payoutEligibleAt: 1 })
         .limit(50)
         .lean(),
+      User.find({
+        ...hostRoleFilter,
+        stripeAccountId: { $nin: [null, ""] },
+      })
+        .select("name displayName display_name email role isBlocked isBanned stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted total_events total_participants createdAt")
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .lean(),
+      HostComplianceSnapshot.aggregate([
+        { $sort: { createdAt: -1 } },
+        { $group: { _id: "$user", latest: { $first: "$$ROOT" } } },
+        { $replaceRoot: { newRoot: "$latest" } },
+        { $sort: { createdAt: -1 } },
+        { $limit: 1000 },
+      ]),
     ]);
 
     const refundFailedBookingIds = refundFailedBookingsRaw.map((b) => b._id);
@@ -2973,6 +3016,35 @@ router.get("/payments/health", async (_req, res) => {
       })
     );
 
+    const complianceByUserId = new Map(
+      (latestComplianceSnapshotsRaw || []).map((row) => [String(row.user || row._id || ""), row])
+    );
+    const hostComplianceRows = (hostsWithStripeAccountsRaw || []).map((host) =>
+      serializeAdminComplianceHost(host, complianceByUserId.get(String(host._id)) || null)
+    );
+    const hostComplianceAttentionHosts = hostComplianceRows
+      .filter((row) => (row.issues || []).length > 0)
+      .sort((a, b) => {
+        const aMismatch = (a.issues || []).includes("NAME_MISMATCH") ? 1 : 0;
+        const bMismatch = (b.issues || []).includes("NAME_MISMATCH") ? 1 : 0;
+        if (aMismatch !== bMismatch) return bMismatch - aMismatch;
+        const aDue = Number(a.requirementsCurrentlyDueCount || 0);
+        const bDue = Number(b.requirementsCurrentlyDueCount || 0);
+        if (aDue !== bDue) return bDue - aDue;
+        return new Date(b.snapshotAt || 0).getTime() - new Date(a.snapshotAt || 0).getTime();
+      })
+      .slice(0, 50);
+    const hostComplianceAttentionCount = hostComplianceAttentionHosts.length;
+    const hostComplianceNameMismatchCount = hostComplianceAttentionHosts.filter((row) =>
+      (row.issues || []).includes("NAME_MISMATCH")
+    ).length;
+    const hostComplianceMissingBankRefCount = hostComplianceAttentionHosts.filter((row) =>
+      (row.issues || []).includes("BANK_REFERENCE_MISSING")
+    ).length;
+    const hostComplianceNoSnapshotCount = hostComplianceAttentionHosts.filter((row) =>
+      (row.issues || []).includes("NO_COMPLIANCE_SNAPSHOT")
+    ).length;
+
     return res.json({
       generatedAt: now.toISOString(),
       summary: {
@@ -2983,11 +3055,16 @@ router.get("/payments/health", async (_req, res) => {
         stripeMissingAccountHosts: hostsStripeMissingAccountCount,
         payoutEligibleBookings: eligiblePayoutBookingsCount,
         payoutAttentionBookings: payoutAttentionCount,
+        hostComplianceAttentionHosts: hostComplianceAttentionCount,
+        hostComplianceNameMismatches: hostComplianceNameMismatchCount,
+        hostComplianceMissingBankReference: hostComplianceMissingBankRefCount,
+        hostComplianceNoSnapshot: hostComplianceNoSnapshotCount,
       },
       refundFailedBookings,
       stripeOnboardingIncompleteHosts,
       payoutAttentionBookings,
       disputedPayments: disputedPaymentItems,
+      hostComplianceAttentionHosts,
     });
   } catch (err) {
     console.error("Admin payments health error", err);
