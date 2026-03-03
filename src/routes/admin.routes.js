@@ -109,6 +109,8 @@ const adminRateLimit = (req, res, next) => {
   return next();
 };
 
+const legacyAdminSessionGuards = [authenticate, authorize(["ADMIN"]), requireAdminAllowlist, adminRateLimit];
+
 const requireReason = (req, res, next) => {
   const method = String(req.method || "").toUpperCase();
   if (!["PATCH", "POST", "PUT", "DELETE"].includes(method)) return next();
@@ -738,7 +740,7 @@ const handleAction = async (req, res) => {
 };
 
 // confirmation + execution split: GET renders confirm page, POST executes
-router.get("/report-action", async (req, res) => {
+router.get("/report-action", ...legacyAdminSessionGuards, async (req, res) => {
   try {
     const { token } = req.query;
     if (!token) return res.status(401).send("Missing token");
@@ -802,7 +804,7 @@ router.get("/report-action", async (req, res) => {
   }
 });
 
-router.post("/report-action", handleAction);
+router.post("/report-action", ...legacyAdminSessionGuards, handleAction);
 
 // All session-based admin routes below require auth + ADMIN role + founder allowlist.
 router.use(authenticate, authorize(["ADMIN"]), requireAdminAllowlist, adminRateLimit, requireReason);
