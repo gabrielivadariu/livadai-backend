@@ -3187,7 +3187,7 @@ router.post("/reports/:id/action", async (req, res) => {
     if (!allowedActions.includes(action)) {
       return res.status(400).json({ message: "Invalid action" });
     }
-    if (["PAUSE_EXPERIENCE", "SUSPEND_USER"].includes(action) && !reason) {
+    if (["PAUSE_EXPERIENCE", "SUSPEND_USER", "MARK_IGNORED"].includes(action) && !reason) {
       return res.status(400).json({ message: "Reason is required" });
     }
 
