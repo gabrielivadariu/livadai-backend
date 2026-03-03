@@ -8,6 +8,38 @@ const REFRESH_URL = process.env.FRONTEND_REFRESH_URL || "http://localhost:3000/s
 const RETURN_URL = process.env.FRONTEND_RETURN_URL || "http://localhost:3000/stripe/success";
 const PLATFORM_FEE = 0.1; // 10%
 
+const ensureStripeAccountUniqueness = async (accountId, userId) => {
+  const existing = await User.findOne({
+    stripeAccountId: String(accountId || "").trim(),
+    _id: { $ne: userId },
+  }).select("_id email");
+  if (existing) {
+    const err = new Error("Stripe account already linked to another LIVADAI user");
+    err.code = "STRIPE_ACCOUNT_ALREADY_LINKED";
+    err.status = 409;
+    throw err;
+  }
+};
+
+const ensureStripeMetadataOwnership = async (accountId, user) => {
+  const acct = await stripe.accounts.retrieve(accountId);
+  const metadata = acct?.metadata && typeof acct.metadata === "object" ? acct.metadata : {};
+  const ownerId = String(metadata.livadaiUserId || "").trim();
+  if (ownerId && ownerId !== String(user._id)) {
+    const err = new Error("Stripe account metadata owner mismatch");
+    err.code = "STRIPE_METADATA_OWNER_MISMATCH";
+    err.status = 409;
+    throw err;
+  }
+
+  const nextMetadata = {
+    ...metadata,
+    livadaiUserId: String(user._id),
+    livadaiUserEmail: String(user.email || "").trim(),
+  };
+  await stripe.accounts.update(accountId, { metadata: nextMetadata });
+};
+
 // Create/connect host account and return onboarding link
 const createHostAccount = async (req, res) => {
   try {
@@ -32,18 +64,31 @@ const createHostAccount = async (req, res) => {
         },
       });
       accountId = account.id;
-      user.stripeAccountId = accountId;
-      user.isStripeChargesEnabled = false;
-      user.isStripePayoutsEnabled = false;
-      user.isStripeDetailsSubmitted = false;
-      await user.save();
-    } else {
-      try {
-        await stripe.accounts.update(accountId, { metadata: hostMetadata });
-      } catch (err) {
-        console.error("Stripe metadata sync error", err?.message || err);
+      await ensureStripeAccountUniqueness(accountId, user._id);
+      const claimed = await User.findOneAndUpdate(
+        {
+          _id: user._id,
+          $or: [{ stripeAccountId: { $exists: false } }, { stripeAccountId: null }, { stripeAccountId: "" }],
+        },
+        {
+          stripeAccountId: accountId,
+          isStripeChargesEnabled: false,
+          isStripePayoutsEnabled: false,
+          isStripeDetailsSubmitted: false,
+        },
+        { new: true }
+      );
+
+      const latestUser = claimed || (await User.findById(user._id).select("stripeAccountId"));
+      if (!latestUser) return res.status(404).json({ message: "User not found" });
+      if (latestUser.stripeAccountId && String(latestUser.stripeAccountId) !== String(accountId)) {
+        accountId = String(latestUser.stripeAccountId);
       }
+    } else {
+      await ensureStripeAccountUniqueness(accountId, user._id);
     }
+
+    await ensureStripeMetadataOwnership(accountId, user);
 
     const accountLink = await stripe.accountLinks.create({
       account: accountId,
@@ -65,6 +110,9 @@ const createHostAccount = async (req, res) => {
 
     return res.json({ url: accountLink.url, stripeAccountId: accountId });
   } catch (err) {
+    if (err?.status) {
+      return res.status(err.status).json({ code: err.code || "STRIPE_LINK_ERROR", message: err.message || "Stripe link error" });
+    }
     console.error("Create host account error", err);
     return res.status(500).json({ message: "Server error" });
   }

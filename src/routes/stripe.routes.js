@@ -24,18 +24,18 @@ const router = Router();
 const webhookRouter = Router();
 
 // Host onboarding
-router.post("/create-host-account", authenticate, authorize(["HOST"]), createHostAccount);
-router.post("/create-onboarding-link", authenticate, authorize(["HOST"]), createOnboardingLink);
+router.post("/create-host-account", authenticate, authorize(["HOST", "BOTH"]), createHostAccount);
+router.post("/create-onboarding-link", authenticate, authorize(["HOST", "BOTH"]), createOnboardingLink);
 // Host dashboard login link
-router.get("/host-dashboard", authenticate, authorize(["HOST"]), hostDashboardLink);
+router.get("/host-dashboard", authenticate, authorize(["HOST", "BOTH"]), hostDashboardLink);
 // Client checkout -> payment intent
 router.post("/checkout", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), createCheckout);
 // Host wallet balance
-router.get("/wallet/balance", authenticate, authorize(["HOST"]), walletBalance);
+router.get("/wallet/balance", authenticate, authorize(["HOST", "BOTH"]), walletBalance);
 // Host wallet transactions
-router.get("/wallet/transactions", authenticate, authorize(["HOST"]), walletTransactions);
+router.get("/wallet/transactions", authenticate, authorize(["HOST", "BOTH"]), walletTransactions);
 // Debug host status
-router.get("/debug/host-status", authenticate, authorize(["HOST"]), debugHostStatus);
+router.get("/debug/host-status", authenticate, authorize(["HOST", "BOTH"]), debugHostStatus);
 
 // Stripe webhook (raw body)
 webhookRouter.post(
@@ -93,21 +93,30 @@ webhookRouter.post(
         case "account.updated": {
           const account = event.data.object;
           const { id, charges_enabled, payouts_enabled, details_submitted } = account || {};
-          const updated = await User.findOneAndUpdate(
+          const matchedUsers = await User.find({ stripeAccountId: id }).select("_id email").lean();
+          if (matchedUsers.length > 1) {
+            console.error("Stripe account linked to multiple users", {
+              accountId: id,
+              userIds: matchedUsers.map((row) => String(row._id)),
+            });
+          }
+          const updated = await User.updateMany(
             { stripeAccountId: id },
             {
               isStripeChargesEnabled: !!charges_enabled,
               isStripePayoutsEnabled: !!payouts_enabled,
               isStripeDetailsSubmitted: !!details_submitted,
             },
-            { new: true }
+            {}
           );
           console.log("Stripe webhook account.updated -> user updated", {
             accountId: id,
             charges_enabled,
             payouts_enabled,
             details_submitted,
-            userFound: !!updated,
+            userFound: matchedUsers.length > 0,
+            matchedUsers: matchedUsers.length,
+            modifiedUsers: Number(updated?.modifiedCount || 0),
           });
           if (id) {
             try {

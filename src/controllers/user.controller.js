@@ -4,6 +4,7 @@ const Booking = require("../models/booking.model");
 const Experience = require("../models/experience.model");
 const bcrypt = require("bcryptjs");
 const { sendEmail } = require("../utils/mailer");
+const stripe = require("../config/stripe");
 const {
   buildPasswordChangedEmail,
   buildEmailChangedEmail,
@@ -444,7 +445,7 @@ const changeEmail = async (req, res) => {
   try {
     const { newEmail } = req.body || {};
     if (!newEmail) return res.status(400).json({ message: "newEmail required" });
-    const user = await User.findById(req.user.id).select("email");
+    const user = await User.findById(req.user.id).select("email stripeAccountId");
     if (!user) return res.status(404).json({ message: "User not found" });
     if (user.email === newEmail) return res.status(400).json({ message: "Email unchanged" });
     const existing = await User.findOne({ email: newEmail });
@@ -454,6 +455,18 @@ const changeEmail = async (req, res) => {
     user.email = newEmail;
     user.lastAuthAt = new Date();
     await user.save();
+    if (user.stripeAccountId) {
+      try {
+        await stripe.accounts.update(user.stripeAccountId, {
+          metadata: {
+            livadaiUserId: String(user._id),
+            livadaiUserEmail: String(newEmail || "").trim(),
+          },
+        });
+      } catch (err) {
+        console.error("Stripe metadata sync after email change error", err?.message || err);
+      }
+    }
     try {
       const html = buildEmailChangedEmail({ newEmail });
       await sendEmail({

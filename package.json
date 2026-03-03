@@ -9,7 +9,8 @@
     "dev": "nodemon server.js",
     "cleanup-file-avatars": "node scripts/cleanup-file-avatars.js",
     "backfill-cloudinary-media": "node scripts/backfill-cloudinary-media-refs.js",
-    "process-scheduled-host-deletions": "node scripts/process-scheduled-host-deletions.js"
+    "process-scheduled-host-deletions": "node scripts/process-scheduled-host-deletions.js",
+    "audit-stripe-links": "node scripts/audit-stripe-account-links.js"
   },
   "dependencies": {
     "axios": "^1.7.7",
