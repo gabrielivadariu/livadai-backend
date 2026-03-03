@@ -13,7 +13,7 @@ const HostComplianceSnapshot = require("../models/hostComplianceSnapshot.model")
 const stripe = require("../config/stripe");
 const { createNotification } = require("../controllers/notifications.controller");
 const { recalcTrustedParticipant } = require("../utils/trust");
-const { collectComplianceIssues } = require("../utils/hostCompliance");
+const { collectComplianceIssues, syncHostComplianceSnapshot } = require("../utils/hostCompliance");
 const { sendEmail } = require("../utils/mailer");
 const { buildBookingCancelledEmail } = require("../utils/emailTemplates");
 const { authenticate, authorize, requireAdminAllowlist } = require("../middleware/auth.middleware");
@@ -444,6 +444,40 @@ const getLatestHostComplianceMap = async (userIds = []) => {
     { $replaceRoot: { newRoot: "$latest" } },
   ]);
   return new Map(rows.map((row) => [String(row.user), row]));
+};
+
+const syncHostComplianceSnapshotSafe = async (userId, triggerEventType = "") => {
+  if (!userId) return null;
+  try {
+    const snapshot = await syncHostComplianceSnapshot({
+      userId,
+      triggerType: "admin",
+      triggerEventType: triggerEventType || "admin.hosts.view",
+      metadata: { source: "admin.routes" },
+    });
+    return snapshot ? (typeof snapshot.toObject === "function" ? snapshot.toObject() : snapshot) : null;
+  } catch (err) {
+    console.error("Admin compliance sync error", {
+      userId: String(userId),
+      triggerEventType: triggerEventType || "admin.hosts.view",
+      message: err?.message || String(err),
+    });
+    return null;
+  }
+};
+
+const ensureComplianceMapHasStripeData = async (rows = [], complianceMap = new Map(), triggerEventType = "") => {
+  const map = complianceMap instanceof Map ? complianceMap : new Map();
+  if (!Array.isArray(rows) || !rows.length) return map;
+
+  for (const row of rows) {
+    const id = String(row?._id || "");
+    if (!id || map.has(id) || !row?.stripeAccountId) continue;
+    const synced = await syncHostComplianceSnapshotSafe(row._id, triggerEventType || "admin.hosts.list");
+    if (synced) map.set(id, synced);
+  }
+
+  return map;
 };
 
 const restoreExperienceSpotsForCancelledBooking = async (booking, expDoc) => {
@@ -1130,7 +1164,7 @@ router.get("/hosts", async (req, res) => {
 
     const hostIds = rows.map((row) => row._id);
 
-    const [complianceMap, experienceStatsRaw, bookingStatsRaw, participantsRaw, reportsRaw] = await Promise.all([
+    const [complianceMapRaw, experienceStatsRaw, bookingStatsRaw, participantsRaw, reportsRaw] = await Promise.all([
       getLatestHostComplianceMap(hostIds.map((id) => String(id))),
       hostIds.length
         ? Experience.aggregate([
@@ -1217,6 +1251,7 @@ router.get("/hosts", async (req, res) => {
           ])
         : [],
     ]);
+    const complianceMap = await ensureComplianceMapHasStripeData(rows, complianceMapRaw, "admin.hosts.list");
 
     const experienceStatsByHost = new Map(experienceStatsRaw.map((row) => [String(row._id), row]));
     const bookingStatsByHost = new Map(bookingStatsRaw.map((row) => [String(row._id), row]));
@@ -1330,8 +1365,12 @@ router.get("/hosts/:id", async (req, res) => {
     }
 
     const now = new Date();
+    let complianceSnapshot = await HostComplianceSnapshot.findOne({ user: hostObjectId }).sort({ createdAt: -1 }).lean();
+    if (!complianceSnapshot && host.stripeAccountId) {
+      complianceSnapshot = await syncHostComplianceSnapshotSafe(hostObjectId, "admin.hosts.details");
+    }
+
     const [
-      complianceSnapshot,
       complianceHistoryRaw,
       experiencesTotal,
       experiencesActive,
@@ -1351,7 +1390,6 @@ router.get("/hosts/:id", async (req, res) => {
       recentBookingsRaw,
       recentReportsRaw,
     ] = await Promise.all([
-      HostComplianceSnapshot.findOne({ user: hostObjectId }).sort({ createdAt: -1 }).lean(),
       HostComplianceSnapshot.find({ user: hostObjectId })
         .sort({ createdAt: -1 })
         .limit(10)
