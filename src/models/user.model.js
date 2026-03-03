@@ -56,6 +56,13 @@ const userSchema = new mongoose.Schema(
     deleteOtpCode: { type: String },
     deleteOtpExpires: { type: Date },
     deleteOtpAttempts: { type: Number, default: 0 },
+    accountDeletionStatus: {
+      type: String,
+      enum: ["NONE", "SCHEDULED"],
+      default: "NONE",
+    },
+    accountDeletionRequestedAt: { type: Date },
+    accountDeletionScheduledAt: { type: Date },
     tokenVersion: { type: Number, default: 0 },
     lastAuthAt: { type: Date },
     rating_avg: { type: Number, default: 0 },

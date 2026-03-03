@@ -424,6 +424,28 @@ const serializeAdminPaymentIssueBooking = (booking, extras = {}) => ({
   issueReason: extras.issueReason || "",
 });
 
+const getLatestHostComplianceMap = async (userIds = []) => {
+  if (!Array.isArray(userIds) || !userIds.length) return new Map();
+  const objectIds = userIds
+    .map((id) => {
+      try {
+        return new mongoose.Types.ObjectId(id);
+      } catch (_err) {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  if (!objectIds.length) return new Map();
+
+  const rows = await HostComplianceSnapshot.aggregate([
+    { $match: { user: { $in: objectIds } } },
+    { $sort: { createdAt: -1 } },
+    { $group: { _id: "$user", latest: { $first: "$$ROOT" } } },
+    { $replaceRoot: { newRoot: "$latest" } },
+  ]);
+  return new Map(rows.map((row) => [String(row.user), row]));
+};
+
 const restoreExperienceSpotsForCancelledBooking = async (booking, expDoc) => {
   if (!expDoc) return;
   const qty = Number(booking.quantity || 1);
@@ -1031,6 +1053,483 @@ router.get("/users", async (req, res) => {
   } catch (err) {
     console.error("Admin users list error", err);
     return res.status(500).json({ message: "Failed to load users" });
+  }
+});
+
+router.get("/hosts", async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const status = String(req.query.status || "all").trim().toLowerCase();
+    const limit = clampLimit(req.query.limit, 20, 50);
+    const page = Math.max(1, Number(req.query.page || 1) || 1);
+    const skip = (page - 1) * limit;
+    const now = new Date();
+
+    const filter = {
+      role: { $in: ["HOST", "BOTH"] },
+    };
+
+    if (q) {
+      const safe = escapeRegex(q);
+      filter.$or = [
+        { email: { $regex: safe, $options: "i" } },
+        { name: { $regex: safe, $options: "i" } },
+        { displayName: { $regex: safe, $options: "i" } },
+        { display_name: { $regex: safe, $options: "i" } },
+      ];
+    }
+
+    if (status === "blocked") filter.isBlocked = true;
+    if (status === "banned") filter.isBanned = true;
+    if (status === "active") {
+      filter.isBlocked = { $ne: true };
+      filter.isBanned = { $ne: true };
+    }
+
+    const [total, rows, totalHosts, blockedHosts, bannedHosts, stripeConnectedHosts] = await Promise.all([
+      User.countDocuments(filter),
+      User.find(filter)
+        .select(
+          [
+            "name",
+            "displayName",
+            "display_name",
+            "email",
+            "role",
+            "isBlocked",
+            "isBanned",
+            "emailVerified",
+            "phoneVerified",
+            "phone",
+            "phoneCountryCode",
+            "city",
+            "country",
+            "stripeAccountId",
+            "isStripeChargesEnabled",
+            "isStripePayoutsEnabled",
+            "isStripeDetailsSubmitted",
+            "accountDeletionStatus",
+            "accountDeletionRequestedAt",
+            "accountDeletionScheduledAt",
+            "total_participants",
+            "total_events",
+            "lastAuthAt",
+            "createdAt",
+            "updatedAt",
+          ].join(" ")
+        )
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      User.countDocuments({ role: { $in: ["HOST", "BOTH"] } }),
+      User.countDocuments({ role: { $in: ["HOST", "BOTH"] }, isBlocked: true }),
+      User.countDocuments({ role: { $in: ["HOST", "BOTH"] }, isBanned: true }),
+      User.countDocuments({ role: { $in: ["HOST", "BOTH"] }, stripeAccountId: { $nin: [null, ""] } }),
+    ]);
+
+    const hostIds = rows.map((row) => row._id);
+
+    const [complianceMap, experienceStatsRaw, bookingStatsRaw, participantsRaw, reportsRaw] = await Promise.all([
+      getLatestHostComplianceMap(hostIds.map((id) => String(id))),
+      hostIds.length
+        ? Experience.aggregate([
+            { $match: { host: { $in: hostIds } } },
+            {
+              $group: {
+                _id: "$host",
+                total: { $sum: 1 },
+                active: {
+                  $sum: {
+                    $cond: [
+                      {
+                        $and: [
+                          { $eq: [{ $toUpper: { $ifNull: ["$status", ""] } }, "PUBLISHED"] },
+                          { $gte: [{ $ifNull: ["$endsAt", new Date(0)] }, now] },
+                        ],
+                      },
+                      1,
+                      0,
+                    ],
+                  },
+                },
+                upcoming: {
+                  $sum: {
+                    $cond: [
+                      { $gte: [{ $ifNull: ["$startsAt", new Date(0)] }, now] },
+                      1,
+                      0,
+                    ],
+                  },
+                },
+              },
+            },
+          ])
+        : [],
+      hostIds.length
+        ? Booking.aggregate([
+            { $match: { host: { $in: hostIds } } },
+            {
+              $group: {
+                _id: "$host",
+                total: { $sum: 1 },
+                paidLike: {
+                  $sum: {
+                    $cond: [{ $in: ["$status", adminBookingPaidStatuses] }, 1, 0],
+                  },
+                },
+                disputed: {
+                  $sum: {
+                    $cond: [{ $eq: ["$status", "DISPUTED"] }, 1, 0],
+                  },
+                },
+              },
+            },
+          ])
+        : [],
+      hostIds.length
+        ? Booking.aggregate([
+            {
+              $match: {
+                host: { $in: hostIds },
+                status: { $in: adminParticipantStatuses },
+              },
+            },
+            {
+              $group: {
+                _id: "$host",
+                participants: { $sum: { $ifNull: ["$quantity", 1] } },
+              },
+            },
+          ])
+        : [],
+      hostIds.length
+        ? Report.aggregate([
+            { $match: { host: { $in: hostIds } } },
+            {
+              $group: {
+                _id: "$host",
+                total: { $sum: 1 },
+                open: { $sum: { $cond: [{ $eq: ["$status", "OPEN"] }, 1, 0] } },
+                investigating: { $sum: { $cond: [{ $eq: ["$status", "INVESTIGATING"] }, 1, 0] } },
+              },
+            },
+          ])
+        : [],
+    ]);
+
+    const experienceStatsByHost = new Map(experienceStatsRaw.map((row) => [String(row._id), row]));
+    const bookingStatsByHost = new Map(bookingStatsRaw.map((row) => [String(row._id), row]));
+    const participantsByHost = new Map(participantsRaw.map((row) => [String(row._id), Number(row.participants || 0)]));
+    const reportsByHost = new Map(reportsRaw.map((row) => [String(row._id), row]));
+
+    const items = rows.map((row) => {
+      const id = String(row._id);
+      const snapshot = complianceMap.get(id) || null;
+      const hostBase = serializeAdminComplianceHost(row, snapshot);
+      const expStats = experienceStatsByHost.get(id) || {};
+      const bookingStats = bookingStatsByHost.get(id) || {};
+      const reportStats = reportsByHost.get(id) || {};
+      return {
+        ...hostBase,
+        phone: row.phone || "",
+        phoneCountryCode: row.phoneCountryCode || "",
+        phoneVerified: !!row.phoneVerified,
+        city: row.city || "",
+        country: row.country || "",
+        accountDeletionStatus: row.accountDeletionStatus || "NONE",
+        accountDeletionRequestedAt: row.accountDeletionRequestedAt || null,
+        accountDeletionScheduledAt: row.accountDeletionScheduledAt || null,
+        lastAuthAt: row.lastAuthAt || null,
+        counts: {
+          experiencesTotal: Number(expStats.total || 0),
+          experiencesActive: Number(expStats.active || 0),
+          experiencesUpcoming: Number(expStats.upcoming || 0),
+          bookingsTotal: Number(bookingStats.total || 0),
+          bookingsPaidLike: Number(bookingStats.paidLike || 0),
+          bookingsDisputed: Number(bookingStats.disputed || 0),
+          participantsHosted: Number(participantsByHost.get(id) || 0),
+          reportsTotal: Number(reportStats.total || 0),
+          reportsOpen: Number(reportStats.open || 0),
+          reportsInvestigating: Number(reportStats.investigating || 0),
+        },
+      };
+    });
+
+    const complianceAttentionInPage = items.filter((item) => (item.issues || []).length > 0).length;
+
+    return res.json({
+      page,
+      limit,
+      total,
+      pages: Math.max(1, Math.ceil(total / limit)),
+      summary: {
+        totalHosts,
+        blockedHosts,
+        bannedHosts,
+        stripeConnectedHosts,
+        complianceAttentionInPage,
+      },
+      items,
+    });
+  } catch (err) {
+    console.error("Admin hosts list error", err);
+    return res.status(500).json({ message: "Failed to load hosts" });
+  }
+});
+
+router.get("/hosts/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isObjectIdLike(id)) {
+      return res.status(400).json({ message: "Invalid host id" });
+    }
+    const hostObjectId = new mongoose.Types.ObjectId(id);
+    const host = await User.findById(hostObjectId)
+      .select(
+        [
+          "name",
+          "displayName",
+          "display_name",
+          "email",
+          "role",
+          "isBlocked",
+          "isBanned",
+          "emailVerified",
+          "phoneVerified",
+          "phone",
+          "phoneCountryCode",
+          "city",
+          "country",
+          "languages",
+          "about_me",
+          "shortBio",
+          "experience",
+          "stripeAccountId",
+          "isStripeChargesEnabled",
+          "isStripePayoutsEnabled",
+          "isStripeDetailsSubmitted",
+          "accountDeletionStatus",
+          "accountDeletionRequestedAt",
+          "accountDeletionScheduledAt",
+          "tokenVersion",
+          "lastAuthAt",
+          "total_participants",
+          "total_events",
+          "rating_avg",
+          "rating_count",
+          "createdAt",
+          "updatedAt",
+          "hostProfile",
+        ].join(" ")
+      )
+      .lean();
+
+    if (!host || !["HOST", "BOTH"].includes(String(host.role || "").toUpperCase())) {
+      return res.status(404).json({ message: "Host not found" });
+    }
+
+    const now = new Date();
+    const [
+      complianceSnapshot,
+      complianceHistoryRaw,
+      experiencesTotal,
+      experiencesActive,
+      experiencesUpcoming,
+      experiencesCompleted,
+      bookingsTotal,
+      bookingsPaidLike,
+      bookingsDisputed,
+      bookingsRefundFailed,
+      participantsHostedAgg,
+      reportsTotal,
+      reportsOpen,
+      reportsInvestigating,
+      paymentsDisputed,
+      messagesSent,
+      recentExperiencesRaw,
+      recentBookingsRaw,
+      recentReportsRaw,
+    ] = await Promise.all([
+      HostComplianceSnapshot.findOne({ user: hostObjectId }).sort({ createdAt: -1 }).lean(),
+      HostComplianceSnapshot.find({ user: hostObjectId })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .select(
+          "createdAt nameMatchState livadaiName stripeLegalName stripeDisplayName stripeBusinessType bankName bankLast4 bankCountry bankCurrency requirementsDisabledReason requirementsCurrentlyDue isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted triggerType triggerEventType"
+        )
+        .lean(),
+      Experience.countDocuments({ host: hostObjectId }),
+      Experience.countDocuments({
+        host: hostObjectId,
+        status: { $regex: /^published$/i },
+        endsAt: { $gte: now },
+      }),
+      Experience.countDocuments({ host: hostObjectId, startsAt: { $gte: now } }),
+      Experience.countDocuments({ host: hostObjectId, endsAt: { $lt: now } }),
+      Booking.countDocuments({ host: hostObjectId }),
+      Booking.countDocuments({ host: hostObjectId, status: { $in: adminBookingPaidStatuses } }),
+      Booking.countDocuments({ host: hostObjectId, status: "DISPUTED" }),
+      Booking.countDocuments({ host: hostObjectId, status: "REFUND_FAILED" }),
+      Booking.aggregate([
+        {
+          $match: {
+            host: hostObjectId,
+            status: { $in: adminParticipantStatuses },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            participants: { $sum: { $ifNull: ["$quantity", 1] } },
+          },
+        },
+      ]),
+      Report.countDocuments({ host: hostObjectId }),
+      Report.countDocuments({ host: hostObjectId, status: "OPEN" }),
+      Report.countDocuments({ host: hostObjectId, status: "INVESTIGATING" }),
+      Payment.countDocuments({ host: hostObjectId, status: { $in: ["DISPUTED", "DISPUTE_LOST"] } }),
+      Message.countDocuments({ sender: hostObjectId }),
+      Experience.find({ host: hostObjectId })
+        .sort({ createdAt: -1 })
+        .limit(12)
+        .populate("host", "name displayName display_name email")
+        .lean(),
+      Booking.find({ host: hostObjectId })
+        .populate("host", "name displayName display_name email")
+        .populate("explorer", "name displayName display_name email")
+        .populate("experience", "title startsAt endsAt startDate endDate city country price isActive status")
+        .sort({ createdAt: -1 })
+        .limit(12)
+        .lean(),
+      Report.find({ host: hostObjectId })
+        .populate("reporter", "name displayName display_name email")
+        .populate("host", "name displayName display_name email")
+        .populate("targetUserId", "name displayName display_name email isBlocked isBanned")
+        .populate("experience", "title status isActive city country")
+        .populate("booking", "status quantity")
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .lean(),
+    ]);
+
+    const experienceIds = recentExperiencesRaw.map((row) => row._id);
+    const participantsByExperienceRaw = experienceIds.length
+      ? await Booking.aggregate([
+          {
+            $match: {
+              experience: { $in: experienceIds },
+              status: { $in: adminParticipantStatuses },
+            },
+          },
+          {
+            $group: {
+              _id: "$experience",
+              participants: { $sum: { $ifNull: ["$quantity", 1] } },
+            },
+          },
+        ])
+      : [];
+    const participantsByExperience = new Map(
+      participantsByExperienceRaw.map((row) => [String(row._id), Number(row.participants || 0)])
+    );
+
+    const bookingIds = recentBookingsRaw.map((row) => row._id);
+    const bookingPayments = bookingIds.length
+      ? await Payment.find({ booking: { $in: bookingIds } })
+          .select("booking status paymentType amount totalAmount currency stripePaymentIntentId stripeSessionId")
+          .sort({ createdAt: -1 })
+          .lean()
+      : [];
+    const paymentByBooking = new Map();
+    for (const p of bookingPayments) {
+      const key = String(p.booking);
+      if (paymentByBooking.has(key)) continue;
+      paymentByBooking.set(key, {
+        status: p.status || "",
+        paymentType: p.paymentType || "",
+        amount: Number(p.totalAmount || p.amount || 0),
+        currency: p.currency || "ron",
+        hasStripePaymentIntent: !!p.stripePaymentIntentId,
+        stripeSessionId: p.stripeSessionId || null,
+      });
+    }
+
+    const hostPayload = {
+      ...serializeAdminComplianceHost(host, complianceSnapshot || null),
+      phone: host.phone || "",
+      phoneCountryCode: host.phoneCountryCode || "",
+      phoneVerified: !!host.phoneVerified,
+      city: host.city || "",
+      country: host.country || "",
+      emailVerified: !!host.emailVerified,
+      languages: Array.isArray(host.languages) ? host.languages : [],
+      aboutMe: host.about_me || "",
+      shortBio: host.shortBio || "",
+      experience: host.experience || "",
+      tokenVersion: Number(host.tokenVersion || 0),
+      lastAuthAt: host.lastAuthAt || null,
+      accountDeletionStatus: host.accountDeletionStatus || "NONE",
+      accountDeletionRequestedAt: host.accountDeletionRequestedAt || null,
+      accountDeletionScheduledAt: host.accountDeletionScheduledAt || null,
+      totalParticipants: Number(host.total_participants || 0),
+      totalEvents: Number(host.total_events || 0),
+      ratingAvg: Number(host.rating_avg || 0),
+      ratingCount: Number(host.rating_count || 0),
+      hostProfile: host.hostProfile || null,
+      complianceHistory: complianceHistoryRaw.map((row) => ({
+        id: String(row._id),
+        snapshotAt: row.createdAt || null,
+        triggerType: row.triggerType || "",
+        triggerEventType: row.triggerEventType || "",
+        nameMatchState: row.nameMatchState || "",
+        livadaiName: row.livadaiName || "",
+        stripeLegalName: row.stripeLegalName || "",
+        stripeDisplayName: row.stripeDisplayName || "",
+        stripeBusinessType: row.stripeBusinessType || "",
+        bankName: row.bankName || "",
+        bankLast4: row.bankLast4 || "",
+        bankCountry: row.bankCountry || "",
+        bankCurrency: row.bankCurrency || "",
+        requirementsDisabledReason: row.requirementsDisabledReason || "",
+        requirementsCurrentlyDueCount: Number(row.requirementsCurrentlyDue?.length || 0),
+        stripeFlags: {
+          chargesEnabled: !!row.isStripeChargesEnabled,
+          payoutsEnabled: !!row.isStripePayoutsEnabled,
+          detailsSubmitted: !!row.isStripeDetailsSubmitted,
+        },
+      })),
+    };
+
+    return res.json({
+      host: hostPayload,
+      counts: {
+        experiencesTotal,
+        experiencesActive,
+        experiencesUpcoming,
+        experiencesCompleted,
+        bookingsTotal,
+        bookingsPaidLike,
+        bookingsDisputed,
+        bookingsRefundFailed,
+        participantsHosted: Number(participantsHostedAgg?.[0]?.participants || 0),
+        reportsTotal,
+        reportsOpen,
+        reportsInvestigating,
+        paymentsDisputed,
+        messagesSent,
+      },
+      recentExperiences: recentExperiencesRaw.map((row) => serializeAdminExperience(row, participantsByExperience)),
+      recentBookings: recentBookingsRaw.map((row) =>
+        serializeAdminBooking(row, {
+          payment: paymentByBooking.get(String(row._id)) || null,
+        })
+      ),
+      recentReports: recentReportsRaw.map((row) => serializeAdminReport(row, { now })),
+    });
+  } catch (err) {
+    console.error("Admin host details error", err);
+    return res.status(500).json({ message: "Failed to load host details" });
   }
 });
 

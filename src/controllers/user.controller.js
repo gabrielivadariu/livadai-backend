@@ -182,6 +182,14 @@ const buildHistory = async (userId) => {
 
 const canDeleteAccount = async (user) => {
   const isHost = user.isHost || user.role === "HOST" || user.role === "BOTH";
+  if (isHost && user.accountDeletionStatus === "SCHEDULED" && user.accountDeletionScheduledAt) {
+    return {
+      ok: false,
+      message: `Contul gazdei este deja programat pentru ștergere la ${new Date(
+        user.accountDeletionScheduledAt
+      ).toISOString()}. / Host account deletion is already scheduled.`,
+    };
+  }
   if (isHost) {
     const now = new Date();
     const activeExpCount = await Experience.countDocuments({
@@ -274,7 +282,9 @@ const toggleFavorite = async (req, res) => {
 
 const requestDeleteOtp = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select("email role isHost deleteOtpCode deleteOtpExpires deleteOtpAttempts");
+    const user = await User.findById(req.user.id).select(
+      "email role isHost deleteOtpCode deleteOtpExpires deleteOtpAttempts accountDeletionStatus accountDeletionScheduledAt"
+    );
     if (!user) return res.status(404).json({ message: "User not found" });
     const allowed = await canDeleteAccount(user);
     if (!allowed.ok) return res.status(400).json({ message: allowed.message });
@@ -309,7 +319,9 @@ const confirmDeleteOtp = async (req, res) => {
   try {
     const { otpCode } = req.body || {};
     if (!otpCode) return res.status(400).json({ message: "otpCode required" });
-    const user = await User.findById(req.user.id).select("email role isHost deleteOtpCode deleteOtpExpires deleteOtpAttempts");
+    const user = await User.findById(req.user.id).select(
+      "email role isHost deleteOtpCode deleteOtpExpires deleteOtpAttempts accountDeletionStatus accountDeletionRequestedAt accountDeletionScheduledAt isBlocked tokenVersion"
+    );
     if (!user) return res.status(404).json({ message: "User not found" });
     const allowed = await canDeleteAccount(user);
     if (!allowed.ok) return res.status(400).json({ message: allowed.message });
@@ -327,6 +339,48 @@ const confirmDeleteOtp = async (req, res) => {
       user.deleteOtpAttempts = (user.deleteOtpAttempts || 0) + 1;
       await user.save();
       return res.status(400).json({ message: "Invalid or expired code" });
+    }
+
+    const isHost = user.isHost || user.role === "HOST" || user.role === "BOTH";
+    if (isHost) {
+      const now = new Date();
+      const scheduledAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+      user.accountDeletionStatus = "SCHEDULED";
+      user.accountDeletionRequestedAt = now;
+      user.accountDeletionScheduledAt = scheduledAt;
+      user.deleteOtpCode = undefined;
+      user.deleteOtpExpires = undefined;
+      user.deleteOtpAttempts = 0;
+      user.isBlocked = true;
+      user.tokenVersion = (user.tokenVersion || 0) + 1;
+      await user.save();
+
+      try {
+        await sendEmail({
+          to: user.email,
+          subject: "Ștergere programată / Scheduled deletion – LIVADAI",
+          html: `
+            <div style="font-family:Arial,sans-serif;color:#0f172a;line-height:1.6">
+              <p>Ai solicitat ștergerea contului de gazdă.</p>
+              <p>Contul tău va fi șters definitiv după data: <strong>${scheduledAt.toISOString()}</strong>.</p>
+              <p>Dacă nu ai făcut tu această solicitare, contactează imediat suportul.</p>
+              <hr />
+              <p>You requested host account deletion.</p>
+              <p>Your account will be permanently deleted after: <strong>${scheduledAt.toISOString()}</strong>.</p>
+              <p>If this was not you, contact support immediately.</p>
+            </div>
+          `,
+          type: "official",
+          userId: user._id,
+        });
+      } catch (err) {
+        console.error("Scheduled deletion email error", err);
+      }
+
+      return res.status(202).json({
+        message: "Host account deletion scheduled",
+        scheduledFor: scheduledAt.toISOString(),
+      });
     }
 
     try {
