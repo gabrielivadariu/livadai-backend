@@ -10,11 +10,19 @@ const {
   buildPasswordChangedEmail,
 } = require("../utils/emailTemplates");
 const { validatePasswordStrength } = require("../utils/passwordPolicy");
-const { setAuthCookie, clearAuthCookie } = require("../utils/authCookies");
+const { setAuthCookie, clearAuthCookie, getAuthTokenFromCookie } = require("../utils/authCookies");
 
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 5;
+const AUTH_REFRESH_MAX_EXPIRED_SEC = Number(process.env.AUTH_REFRESH_MAX_EXPIRED_SEC || 14 * 24 * 60 * 60);
 const loginAttempts = new Map();
+
+const getBearerToken = (req) => {
+  const authHeader = req.headers.authorization || "";
+  return authHeader.startsWith("Bearer ") ? authHeader.split(" ")[1] : null;
+};
+
+const getAuthTokenFromRequest = (req) => getAuthTokenFromCookie(req) || getBearerToken(req);
 
 const getClientIp = (req) => {
   const forwarded = req.headers["x-forwarded-for"];
@@ -446,6 +454,56 @@ const buildAuthUser = (user) => ({
   avatar: user.avatar || user.profilePhoto || "",
 });
 
+const refreshSession = async (req, res) => {
+  try {
+    const tokenFromRequest = getAuthTokenFromRequest(req);
+    if (!tokenFromRequest) {
+      return res.status(401).json({ message: "Authorization token missing" });
+    }
+
+    let payload;
+    try {
+      payload = jwt.verify(tokenFromRequest, process.env.JWT_SECRET, { ignoreExpiration: true });
+    } catch (_err) {
+      return res.status(401).json({ message: "Invalid or expired token" });
+    }
+
+    if (!payload?.userId) {
+      return res.status(401).json({ message: "Invalid or expired token" });
+    }
+
+    if (typeof payload.exp === "number") {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const expiredForSec = nowSec - payload.exp;
+      if (expiredForSec > AUTH_REFRESH_MAX_EXPIRED_SEC) {
+        return res.status(401).json({ message: "Session expired. Please login again." });
+      }
+    }
+
+    const user = await User.findById(payload.userId);
+    if (!user) return res.status(401).json({ message: "Invalid or expired token" });
+    if (user.isBlocked || user.isBanned) return res.status(403).json({ message: "User blocked" });
+    if ((user.tokenVersion || 0) !== (payload.tokenVersion || 0)) {
+      return res.status(401).json({ message: "Invalid or expired token" });
+    }
+
+    user.lastAuthAt = new Date();
+    await user.save();
+
+    const nextToken = signToken(user);
+    setAuthCookie(res, nextToken);
+
+    return res.json({
+      message: "Session refreshed",
+      token: nextToken,
+      user: buildAuthUser(user),
+    });
+  } catch (err) {
+    console.error("Refresh session error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
 const getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user?.id);
@@ -554,4 +612,5 @@ module.exports = {
   becomeHost,
   getMe,
   logout,
+  refreshSession,
 };

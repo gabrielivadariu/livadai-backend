@@ -12,6 +12,7 @@ const {
   becomeHost,
   getMe,
   logout,
+  refreshSession,
 } = require("../controllers/auth.controller");
 const { authenticate } = require("../middleware/auth.middleware");
 
@@ -26,6 +27,7 @@ router.post("/reset-password-otp", resetPasswordOtp);
 router.post("/verify-email", verifyEmail);
 router.post("/verify-email-code", verifyEmail);
 router.post("/resend-email-verification", resendEmailVerification);
+router.post("/refresh", refreshSession);
 router.post("/reauth", authenticate, reauth);
 router.post("/become-host", authenticate, becomeHost);
 router.get("/me", authenticate, getMe);
