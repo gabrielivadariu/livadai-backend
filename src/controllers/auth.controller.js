@@ -411,7 +411,17 @@ const verifyEmail = async (req, res) => {
     if (!email || !code) return res.status(400).json({ message: "email and code required" });
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ message: "Invalid or expired code" });
-    if (user.emailVerified) return res.json({ message: "Email already verified", token: signToken(user) });
+    if (user.emailVerified) {
+      user.lastAuthAt = new Date();
+      await user.save();
+      const existingToken = signToken(user);
+      setAuthCookie(res, existingToken);
+      return res.json({
+        message: "Email already verified",
+        token: existingToken,
+        user: buildAuthUser(user),
+      });
+    }
     if (!user.emailVerificationCode || !user.emailVerificationExpires) return res.status(400).json({ message: "Invalid or expired code" });
     if (user.emailVerificationAttempts >= 5) return res.status(400).json({ message: "Too many attempts" });
     if (new Date(user.emailVerificationExpires) < new Date()) return res.status(400).json({ message: "Invalid or expired code" });
@@ -425,6 +435,7 @@ const verifyEmail = async (req, res) => {
     user.emailVerificationCode = undefined;
     user.emailVerificationExpires = undefined;
     user.emailVerificationAttempts = 0;
+    user.lastAuthAt = new Date();
     await user.save();
 
     const token = signToken(user);
@@ -432,13 +443,7 @@ const verifyEmail = async (req, res) => {
     return res.json({
       message: "Email verified",
       token,
-      user: {
-        _id: user._id,
-        name: user.name,
-        displayName: user.displayName || user.display_name || user.name,
-        email: user.email,
-        role: user.role,
-      },
+      user: buildAuthUser(user),
     });
   } catch (err) {
     console.error("Verify email error", err);
