@@ -1,7 +1,7 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/user.model");
 const { getAuthTokenFromCookie, setAuthCookie } = require("../utils/authCookies");
-const { isAdminRole, hasAdminCapability } = require("../utils/adminRoles");
+const { ADMIN_CAPABILITIES, isAdminRole, hasAdminCapability } = require("../utils/adminRoles");
 
 const getBearerToken = (req) => {
   const authHeader = req.headers.authorization || "";
@@ -136,6 +136,19 @@ const requireAdminCapability = (capability) => (req, res, next) => {
   return next();
 };
 
+const requireOwnerAdmin = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ message: "Authorization required" });
+  }
+  if (!isAdminRole(req.user.role)) {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+  if (!hasAdminCapability(req.user.role, ADMIN_CAPABILITIES.OWNER_WRITE)) {
+    return res.status(403).json({ message: "Owner admin permissions required" });
+  }
+  return next();
+};
+
 module.exports = {
   authenticate,
   optionalAuthenticate,
@@ -143,4 +156,5 @@ module.exports = {
   requireRecentAuth,
   requireAdminAllowlist,
   requireAdminCapability,
+  requireOwnerAdmin,
 };

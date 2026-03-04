@@ -4,6 +4,7 @@ const ADMIN_CAPABILITIES = {
   EXPERIENCES_WRITE: "EXPERIENCES_WRITE",
   BOOKINGS_WRITE: "BOOKINGS_WRITE",
   REPORTS_WRITE: "REPORTS_WRITE",
+  OWNER_WRITE: "OWNER_WRITE",
 };
 
 const ADMIN_ROLES = [
@@ -20,7 +21,13 @@ const ALL_USER_ROLES = [...BASE_USER_ROLES, ...ADMIN_ROLES];
 
 const ROLE_CAPABILITIES = {
   OWNER_ADMIN: ["*"],
-  ADMIN: ["*"],
+  ADMIN: [
+    ADMIN_CAPABILITIES.PANEL_READ,
+    ADMIN_CAPABILITIES.USERS_WRITE,
+    ADMIN_CAPABILITIES.EXPERIENCES_WRITE,
+    ADMIN_CAPABILITIES.BOOKINGS_WRITE,
+    ADMIN_CAPABILITIES.REPORTS_WRITE,
+  ],
   ADMIN_SUPPORT: [
     ADMIN_CAPABILITIES.PANEL_READ,
     ADMIN_CAPABILITIES.BOOKINGS_WRITE,
@@ -43,13 +50,20 @@ const normalizeRole = (role = "") => String(role || "").trim().toUpperCase();
 
 const isAdminRole = (role = "") => ADMIN_ROLES.includes(normalizeRole(role));
 
+const getAdminCapabilities = (role = "") => {
+  const normalizedRole = normalizeRole(role);
+  const capabilities = ROLE_CAPABILITIES[normalizedRole] || [];
+  if (!capabilities.length) return [];
+  if (capabilities.includes("*")) return [...new Set(Object.values(ADMIN_CAPABILITIES))];
+  return [...new Set(capabilities)];
+};
+
 const hasAdminCapability = (role = "", capability = "") => {
   const normalizedRole = normalizeRole(role);
   const normalizedCapability = String(capability || "").trim();
   if (!normalizedCapability) return false;
-  const capabilities = ROLE_CAPABILITIES[normalizedRole] || [];
+  const capabilities = getAdminCapabilities(normalizedRole);
   if (!capabilities.length) return false;
-  if (capabilities.includes("*")) return true;
   return capabilities.includes(normalizedCapability);
 };
 
@@ -61,5 +75,6 @@ module.exports = {
   ROLE_CAPABILITIES,
   normalizeRole,
   isAdminRole,
+  getAdminCapabilities,
   hasAdminCapability,
 };

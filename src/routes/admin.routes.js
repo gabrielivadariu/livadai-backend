@@ -16,8 +16,16 @@ const { recalcTrustedParticipant } = require("../utils/trust");
 const { collectComplianceIssues, syncHostComplianceSnapshot } = require("../utils/hostCompliance");
 const { sendEmail } = require("../utils/mailer");
 const { buildBookingCancelledEmail } = require("../utils/emailTemplates");
-const { authenticate, requireAdminAllowlist, requireAdminCapability } = require("../middleware/auth.middleware");
-const { ADMIN_ROLES, ALL_USER_ROLES, ADMIN_CAPABILITIES } = require("../utils/adminRoles");
+const { authenticate, requireAdminAllowlist, requireAdminCapability, requireOwnerAdmin } = require("../middleware/auth.middleware");
+const {
+  ADMIN_ROLES,
+  ALL_USER_ROLES,
+  ADMIN_CAPABILITIES,
+  isAdminRole,
+  hasAdminCapability,
+  normalizeRole,
+  getAdminCapabilities,
+} = require("../utils/adminRoles");
 
 const router = Router();
 const cleanupActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "PENDING_ATTENDANCE", "DISPUTED"];
@@ -29,6 +37,7 @@ const adminBookingFinalStatuses = ["CANCELLED", "REFUNDED", "COMPLETED", "AUTO_C
 const adminRateLimitState = new Map();
 const ADMIN_RATE_LIMIT_WINDOW_MS = Number(process.env.ADMIN_RATE_LIMIT_WINDOW_MS || 60_000);
 const ADMIN_RATE_LIMIT_MAX = Number(process.env.ADMIN_RATE_LIMIT_MAX || 240);
+const hasOwnerWrite = (role) => hasAdminCapability(role, ADMIN_CAPABILITIES.OWNER_WRITE);
 
 const hasExperienceMedia = (exp) =>
   !!(
@@ -672,6 +681,7 @@ const handleAction = async (req, res) => {
       ...req.query,
       ...req.body,
     };
+    const actorHasOwnerWrite = hasOwnerWrite(req.user?.role);
     if (!token) return res.status(401).send("Missing token");
     let payload;
     try {
@@ -707,6 +717,19 @@ const handleAction = async (req, res) => {
     }
     if (needsText && (!confirmText || confirmText.trim().toUpperCase() !== requiredWord)) {
       return res.status(400).send(`Type ${requiredWord} to confirm this action`);
+    }
+
+    if (action === "BAN_HOST" && hostId) {
+      const targetHost = await User.findById(hostId).select("role");
+      if (targetHost && isAdminRole(targetHost.role) && !actorHasOwnerWrite) {
+        return res.status(403).send("Only owner admin can ban another admin");
+      }
+    }
+    if (action === "BAN_EXPLORER" && explorerId) {
+      const targetExplorer = await User.findById(explorerId).select("role");
+      if (targetExplorer && isAdminRole(targetExplorer.role) && !actorHasOwnerWrite) {
+        return res.status(403).send("Only owner admin can ban another admin");
+      }
     }
 
     let message = "OK";
@@ -820,6 +843,23 @@ router.use(
   requireAdminCapability(ADMIN_CAPABILITIES.PANEL_READ),
   requireReason
 );
+
+router.get("/me/permissions", (req, res) => {
+  const role = normalizeRole(req.user?.role);
+  const capabilities = getAdminCapabilities(role);
+  return res.json({
+    role,
+    capabilities,
+    can: {
+      panelRead: capabilities.includes(ADMIN_CAPABILITIES.PANEL_READ),
+      usersWrite: capabilities.includes(ADMIN_CAPABILITIES.USERS_WRITE),
+      experiencesWrite: capabilities.includes(ADMIN_CAPABILITIES.EXPERIENCES_WRITE),
+      bookingsWrite: capabilities.includes(ADMIN_CAPABILITIES.BOOKINGS_WRITE),
+      reportsWrite: capabilities.includes(ADMIN_CAPABILITIES.REPORTS_WRITE),
+      ownerWrite: capabilities.includes(ADMIN_CAPABILITIES.OWNER_WRITE),
+    },
+  });
+});
 
 router.get("/dashboard", async (_req, res) => {
   try {
@@ -1818,6 +1858,9 @@ router.patch("/users/:id", requireAdminCapability(ADMIN_CAPABILITIES.USERS_WRITE
     const reason = String(req.adminReason || req.body?.reason || "").trim();
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ message: "User not found" });
+    const actorHasOwnerWrite = hasOwnerWrite(req.user?.role);
+    const targetRoleBefore = normalizeRole(user.role);
+    const targetIsAdminBefore = isAdminRole(targetRoleBefore);
     const before = {
       role: user.role,
       isHost: !!user.isHost,
@@ -1828,15 +1871,26 @@ router.patch("/users/:id", requireAdminCapability(ADMIN_CAPABILITIES.USERS_WRITE
     const diff = {};
 
     if (typeof role === "string") {
-      const nextRole = role.toUpperCase();
+      const nextRole = normalizeRole(role);
       if (!allowedUserRoles.includes(nextRole)) {
         return res.status(400).json({ message: "Invalid role" });
+      }
+      const nextIsAdmin = isAdminRole(nextRole);
+      if ((targetIsAdminBefore || nextIsAdmin) && !actorHasOwnerWrite) {
+        return res.status(403).json({ message: "Only owner admin can manage admin roles" });
       }
       if (user.role !== nextRole) {
         diff.role = { from: user.role, to: nextRole };
       }
       user.role = nextRole;
       user.isHost = nextRole === "HOST" || nextRole === "BOTH";
+    }
+    if (
+      targetIsAdminBefore &&
+      !actorHasOwnerWrite &&
+      (typeof isBlocked === "boolean" || typeof isBanned === "boolean" || invalidateSessions === true)
+    ) {
+      return res.status(403).json({ message: "Only owner admin can modify another admin account" });
     }
     if (typeof isBlocked === "boolean") {
       if (!!user.isBlocked !== isBlocked) {
@@ -3205,7 +3259,7 @@ router.post("/reports/:id/action", requireAdminCapability(ADMIN_CAPABILITIES.REP
 
     const report = await Report.findById(id)
       .populate("experience", "title isActive status")
-      .populate("targetUserId", "email isBlocked isBanned")
+      .populate("targetUserId", "email isBlocked isBanned role")
       .populate("host", "email isBlocked isBanned")
       .populate("reporter", "email isBlocked isBanned");
     if (!report) return res.status(404).json({ message: "Report not found" });
@@ -3278,6 +3332,9 @@ router.post("/reports/:id/action", requireAdminCapability(ADMIN_CAPABILITIES.REP
           (report.host?._id && (await User.findById(report.host._id))) ||
           (report.reporter?._id && (await User.findById(report.reporter._id)));
         if (!userDoc) return res.status(400).json({ message: "No linked user to suspend" });
+        if (isAdminRole(userDoc.role) && !hasOwnerWrite(req.user?.role)) {
+          return res.status(403).json({ message: "Only owner admin can suspend another admin" });
+        }
         const userBefore = { isBlocked: !!userDoc.isBlocked, isBanned: !!userDoc.isBanned };
         userDoc.isBlocked = true;
         await userDoc.save();
@@ -3623,7 +3680,7 @@ router.get("/payments/health", async (_req, res) => {
   }
 });
 
-router.get("/system/health", async (_req, res) => {
+router.get("/system/health", requireOwnerAdmin, async (_req, res) => {
   try {
     const now = new Date();
     const readyStateMap = {
