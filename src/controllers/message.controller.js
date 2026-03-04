@@ -6,6 +6,7 @@ const User = require("../models/user.model");
 const { createNotification } = require("./notifications.controller");
 const Notification = require("../models/notification.model");
 const mongoose = require("mongoose");
+const { isAdminRole } = require("../utils/adminRoles");
 
 const normalizeId = (value) => {
   if (!value) return null;
@@ -68,7 +69,7 @@ const listMessages = async (req, res) => {
     const booking = await Booking.findById(bookingId);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
-    const isAdmin = req.user?.role === "ADMIN";
+    const isAdmin = isAdminRole(req.user?.role);
     if (!isAdmin && !isParticipant(booking, req.user.id)) {
       return res.status(403).json({ message: "Forbidden" });
     }
@@ -114,7 +115,7 @@ const sendMessage = async (req, res) => {
     const booking = await Booking.findById(bookingId);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
-    const isAdmin = req.user?.role === "ADMIN";
+    const isAdmin = isAdminRole(req.user?.role);
     if (!isParticipant(booking, req.user.id)) {
       return res.status(403).json({ message: "Forbidden" });
     }

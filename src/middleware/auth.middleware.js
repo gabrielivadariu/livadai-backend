@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/user.model");
 const { getAuthTokenFromCookie, setAuthCookie } = require("../utils/authCookies");
+const { isAdminRole, hasAdminCapability } = require("../utils/adminRoles");
 
 const getBearerToken = (req) => {
   const authHeader = req.headers.authorization || "";
@@ -105,7 +106,7 @@ const requireAdminAllowlist = (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({ message: "Authorization required" });
   }
-  if (req.user.role !== "ADMIN") {
+  if (!isAdminRole(req.user.role)) {
     return res.status(403).json({ message: "Forbidden" });
   }
 
@@ -122,4 +123,24 @@ const requireAdminAllowlist = (req, res, next) => {
   return next();
 };
 
-module.exports = { authenticate, optionalAuthenticate, authorize, requireRecentAuth, requireAdminAllowlist };
+const requireAdminCapability = (capability) => (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ message: "Authorization required" });
+  }
+  if (!isAdminRole(req.user.role)) {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+  if (!hasAdminCapability(req.user.role, capability)) {
+    return res.status(403).json({ message: "Insufficient admin permissions" });
+  }
+  return next();
+};
+
+module.exports = {
+  authenticate,
+  optionalAuthenticate,
+  authorize,
+  requireRecentAuth,
+  requireAdminAllowlist,
+  requireAdminCapability,
+};

@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { ALL_USER_ROLES } = require("../utils/adminRoles");
 
 const userSchema = new mongoose.Schema(
   {
@@ -8,7 +9,7 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true },
     role: {
       type: String,
-      enum: ["EXPLORER", "HOST", "ADMIN", "BOTH"],
+      enum: ALL_USER_ROLES,
       default: "EXPLORER",
     },
     isHost: { type: Boolean, default: false },

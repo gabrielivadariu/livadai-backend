@@ -16,13 +16,14 @@ const { recalcTrustedParticipant } = require("../utils/trust");
 const { collectComplianceIssues, syncHostComplianceSnapshot } = require("../utils/hostCompliance");
 const { sendEmail } = require("../utils/mailer");
 const { buildBookingCancelledEmail } = require("../utils/emailTemplates");
-const { authenticate, authorize, requireAdminAllowlist } = require("../middleware/auth.middleware");
+const { authenticate, requireAdminAllowlist, requireAdminCapability } = require("../middleware/auth.middleware");
+const { ADMIN_ROLES, ALL_USER_ROLES, ADMIN_CAPABILITIES } = require("../utils/adminRoles");
 
 const router = Router();
 const cleanupActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "PENDING_ATTENDANCE", "DISPUTED"];
 const adminBookingActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "DISPUTED"];
 const adminParticipantStatuses = ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "COMPLETED", "AUTO_COMPLETED"];
-const allowedUserRoles = ["EXPLORER", "HOST", "ADMIN", "BOTH"];
+const allowedUserRoles = ALL_USER_ROLES;
 const adminBookingPaidStatuses = ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "DISPUTED"];
 const adminBookingFinalStatuses = ["CANCELLED", "REFUNDED", "COMPLETED", "AUTO_COMPLETED", "NO_SHOW"];
 const adminRateLimitState = new Map();
@@ -109,7 +110,12 @@ const adminRateLimit = (req, res, next) => {
   return next();
 };
 
-const legacyAdminSessionGuards = [authenticate, authorize(["ADMIN"]), requireAdminAllowlist, adminRateLimit];
+const legacyAdminSessionGuards = [
+  authenticate,
+  requireAdminAllowlist,
+  adminRateLimit,
+  requireAdminCapability(ADMIN_CAPABILITIES.REPORTS_WRITE),
+];
 
 const requireReason = (req, res, next) => {
   const method = String(req.method || "").toUpperCase();
@@ -806,8 +812,14 @@ router.get("/report-action", ...legacyAdminSessionGuards, async (req, res) => {
 
 router.post("/report-action", ...legacyAdminSessionGuards, handleAction);
 
-// All session-based admin routes below require auth + ADMIN role + founder allowlist.
-router.use(authenticate, authorize(["ADMIN"]), requireAdminAllowlist, adminRateLimit, requireReason);
+// All session-based admin routes below require admin auth + founder allowlist + base panel read access.
+router.use(
+  authenticate,
+  requireAdminAllowlist,
+  adminRateLimit,
+  requireAdminCapability(ADMIN_CAPABILITIES.PANEL_READ),
+  requireReason
+);
 
 router.get("/dashboard", async (_req, res) => {
   try {
@@ -837,7 +849,7 @@ router.get("/dashboard", async (_req, res) => {
       User.countDocuments({ role: "EXPLORER" }),
       User.countDocuments({ role: "HOST" }),
       User.countDocuments({ role: "BOTH" }),
-      User.countDocuments({ role: "ADMIN" }),
+      User.countDocuments({ role: { $in: ADMIN_ROLES } }),
       User.countDocuments({ isBlocked: true }),
       User.countDocuments({ isBanned: true }),
       Experience.countDocuments({}),
@@ -1795,7 +1807,7 @@ router.get("/users/:id", async (req, res) => {
   }
 });
 
-router.patch("/users/:id", async (req, res) => {
+router.patch("/users/:id", requireAdminCapability(ADMIN_CAPABILITIES.USERS_WRITE), async (req, res) => {
   try {
     const { id } = req.params;
     if (!id || !id.match(/^[a-f\d]{24}$/i)) {
@@ -1940,7 +1952,7 @@ router.get("/experiences", async (req, res) => {
   }
 });
 
-router.post("/experiences/bulk-action", async (req, res) => {
+router.post("/experiences/bulk-action", requireAdminCapability(ADMIN_CAPABILITIES.EXPERIENCES_WRITE), async (req, res) => {
   try {
     const action = String(req.body?.action || "").trim().toUpperCase();
     const idsRaw = Array.isArray(req.body?.ids) ? req.body.ids : [];
@@ -2341,7 +2353,7 @@ router.get("/experiences/:id", async (req, res) => {
   }
 });
 
-router.patch("/experiences/:id", async (req, res) => {
+router.patch("/experiences/:id", requireAdminCapability(ADMIN_CAPABILITIES.EXPERIENCES_WRITE), async (req, res) => {
   try {
     const { id } = req.params;
     if (!id || !id.match(/^[a-f\d]{24}$/i)) {
@@ -2624,7 +2636,7 @@ router.get("/bookings/:id", async (req, res) => {
   }
 });
 
-router.post("/bookings/:id/cancel", async (req, res) => {
+router.post("/bookings/:id/cancel", requireAdminCapability(ADMIN_CAPABILITIES.BOOKINGS_WRITE), async (req, res) => {
   try {
     const { id } = req.params;
     if (!isObjectIdLike(id)) {
@@ -2738,7 +2750,7 @@ router.post("/bookings/:id/cancel", async (req, res) => {
   }
 });
 
-router.post("/bookings/:id/refund", async (req, res) => {
+router.post("/bookings/:id/refund", requireAdminCapability(ADMIN_CAPABILITIES.BOOKINGS_WRITE), async (req, res) => {
   try {
     const { id } = req.params;
     if (!isObjectIdLike(id)) return res.status(400).json({ message: "Invalid booking id" });
@@ -3166,7 +3178,7 @@ router.get("/reports", async (req, res) => {
   }
 });
 
-router.post("/reports/:id/action", async (req, res) => {
+router.post("/reports/:id/action", requireAdminCapability(ADMIN_CAPABILITIES.REPORTS_WRITE), async (req, res) => {
   try {
     const { id } = req.params;
     if (!isObjectIdLike(id)) return res.status(400).json({ message: "Invalid report id" });

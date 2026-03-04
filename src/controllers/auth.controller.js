@@ -11,6 +11,7 @@ const {
 } = require("../utils/emailTemplates");
 const { validatePasswordStrength } = require("../utils/passwordPolicy");
 const { setAuthCookie, clearAuthCookie, getAuthTokenFromCookie } = require("../utils/authCookies");
+const { isAdminRole } = require("../utils/adminRoles");
 
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 5;
@@ -577,7 +578,7 @@ const becomeHost = async (req, res) => {
       avatar: user.avatar || user.profilePhoto,
     };
     user.isHost = true;
-    user.role = user.role === "ADMIN" ? "ADMIN" : user.role === "HOST" ? "HOST" : "BOTH";
+    user.role = isAdminRole(user.role) ? String(user.role || "").trim().toUpperCase() : user.role === "HOST" ? "HOST" : "BOTH";
     await user.save();
 
     const token = signToken(user);
