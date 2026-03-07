@@ -43,6 +43,13 @@ const removeUserToken = async ({ userId, token }) => {
   await User.findByIdAndUpdate(userId, update);
 };
 
+const detachTokenFromOtherUsers = async ({ userId, token }) => {
+  await Promise.all([
+    User.updateMany({ _id: { $ne: userId }, expoPushTokens: token }, { $pull: { expoPushTokens: token } }),
+    User.updateMany({ _id: { $ne: userId }, expoPushToken: token }, { $unset: { expoPushToken: 1 } }),
+  ]);
+};
+
 const handleReceipt = async ({ ticketId, userId, token, tokenPrefix }) => {
   try {
     const receipt = await fetchReceiptWithRetry(ticketId);
@@ -89,6 +96,7 @@ const savePushToken = async (req, res) => {
     if (!TOKEN_REGEX.test(expoPushToken)) return res.status(400).json({ message: "Invalid expoPushToken format" });
     const tokenPrefix = expoPushToken.slice(0, 20);
     logVerbose("[push] save token", { userId: req.user.id, tokenPrefix });
+    await detachTokenFromOtherUsers({ userId: req.user.id, token: expoPushToken });
     await User.findByIdAndUpdate(req.user.id, {
       expoPushToken,
       $addToSet: { expoPushTokens: expoPushToken },
@@ -96,6 +104,25 @@ const savePushToken = async (req, res) => {
     return res.json({ success: true, tokenPrefix });
   } catch (err) {
     console.error("savePushToken error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const removePushToken = async (req, res) => {
+  try {
+    const { expoPushToken } = req.body || {};
+    if (expoPushToken) {
+      if (!TOKEN_REGEX.test(expoPushToken)) return res.status(400).json({ message: "Invalid expoPushToken format" });
+      await removeUserToken({ userId: req.user.id, token: expoPushToken });
+      return res.json({ success: true });
+    }
+    await User.findByIdAndUpdate(req.user.id, {
+      $unset: { expoPushToken: 1 },
+      $set: { expoPushTokens: [] },
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("removePushToken error", err);
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -198,4 +225,4 @@ const debugPushToken = async (req, res) => {
   }
 };
 
-module.exports = { savePushToken, sendPushNotification, sendTestPush, debugPushToken };
+module.exports = { savePushToken, removePushToken, sendPushNotification, sendTestPush, debugPushToken };
