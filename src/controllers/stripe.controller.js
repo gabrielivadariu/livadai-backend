@@ -40,6 +40,85 @@ const ensureStripeMetadataOwnership = async (accountId, user) => {
   await stripe.accounts.update(accountId, { metadata: nextMetadata });
 };
 
+const listAllConnectedAccounts = async ({ maxPages = 20, limit = 100 } = {}) => {
+  const rows = [];
+  let startingAfter = "";
+  let hasMore = true;
+  let pageNo = 0;
+
+  while (hasMore && pageNo < maxPages) {
+    const page = await stripe.accounts.list({
+      limit,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    });
+    const data = Array.isArray(page?.data) ? page.data : [];
+    if (!data.length) break;
+    rows.push(...data);
+    hasMore = !!page?.has_more;
+    startingAfter = String(data[data.length - 1]?.id || "");
+    pageNo += 1;
+  }
+
+  return rows;
+};
+
+const scoreAccountCandidate = (account, userId, userEmail) => {
+  const metadata = account?.metadata && typeof account.metadata === "object" ? account.metadata : {};
+  const ownerId = String(metadata.livadaiUserId || "").trim();
+  const ownerEmail = String(metadata.livadaiUserEmail || "").trim().toLowerCase();
+  const accountEmail = String(account?.email || "").trim().toLowerCase();
+  const normalizedUserEmail = String(userEmail || "").trim().toLowerCase();
+
+  if (ownerId && ownerId !== String(userId)) return -1;
+
+  let score = 0;
+  if (ownerId && ownerId === String(userId)) score += 100;
+  if (ownerEmail && normalizedUserEmail && ownerEmail === normalizedUserEmail) score += 70;
+  if (accountEmail && normalizedUserEmail && accountEmail === normalizedUserEmail) score += 40;
+  if (account?.details_submitted) score += 25;
+  if (account?.charges_enabled) score += 20;
+  if (account?.payouts_enabled) score += 20;
+  if (String(account?.type || "").toLowerCase() === "express") score += 10;
+  return score;
+};
+
+const findReusableStripeAccountForUser = async (user) => {
+  const connectedAccounts = await listAllConnectedAccounts();
+  if (!connectedAccounts.length) return null;
+
+  const candidates = connectedAccounts
+    .map((account) => ({
+      account,
+      score: scoreAccountCandidate(account, user?._id, user?.email),
+    }))
+    .filter((row) => row.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const bCreated = Number(b.account?.created || 0);
+      const aCreated = Number(a.account?.created || 0);
+      return bCreated - aCreated;
+    });
+
+  for (const row of candidates) {
+    const accountId = String(row.account?.id || "").trim();
+    if (!accountId) continue;
+    try {
+      await ensureStripeAccountUniqueness(accountId, user._id);
+      return {
+        accountId,
+        source: row.score >= 100 ? "metadata_owner" : "email_match",
+      };
+    } catch (err) {
+      if (err?.code === "STRIPE_ACCOUNT_ALREADY_LINKED") {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  return null;
+};
+
 // Create/connect host account and return onboarding link
 const createHostAccount = async (req, res) => {
   try {
@@ -52,38 +131,28 @@ const createHostAccount = async (req, res) => {
       livadaiUserEmail: String(user.email || "").trim(),
     };
     let accountId = user.stripeAccountId;
-    const createdNewAccount = !accountId;
+    let triggerType = "host_account_link_opened";
     if (!accountId) {
-      const account = await stripe.accounts.create({
-        type: "express",
-        email: user.email,
-        metadata: hostMetadata,
-        capabilities: {
-          card_payments: { requested: true },
-          transfers: { requested: true },
-        },
-      });
-      accountId = account.id;
-      await ensureStripeAccountUniqueness(accountId, user._id);
-      const claimed = await User.findOneAndUpdate(
-        {
-          _id: user._id,
-          $or: [{ stripeAccountId: { $exists: false } }, { stripeAccountId: null }, { stripeAccountId: "" }],
-        },
-        {
-          stripeAccountId: accountId,
-          isStripeChargesEnabled: false,
-          isStripePayoutsEnabled: false,
-          isStripeDetailsSubmitted: false,
-        },
-        { new: true }
-      );
-
-      const latestUser = claimed || (await User.findById(user._id).select("stripeAccountId"));
-      if (!latestUser) return res.status(404).json({ message: "User not found" });
-      if (latestUser.stripeAccountId && String(latestUser.stripeAccountId) !== String(accountId)) {
-        accountId = String(latestUser.stripeAccountId);
+      const reusable = await findReusableStripeAccountForUser(user);
+      if (reusable?.accountId) {
+        accountId = reusable.accountId;
+        triggerType = `host_account_reused_${reusable.source}`;
+      } else {
+        const account = await stripe.accounts.create({
+          type: "express",
+          email: user.email,
+          metadata: hostMetadata,
+          capabilities: {
+            card_payments: { requested: true },
+            transfers: { requested: true },
+          },
+        });
+        accountId = account.id;
+        triggerType = "host_account_created";
       }
+
+      await ensureStripeAccountUniqueness(accountId, user._id);
+      await User.findByIdAndUpdate(user._id, { stripeAccountId: accountId }, { new: false });
     } else {
       await ensureStripeAccountUniqueness(accountId, user._id);
     }
@@ -101,7 +170,7 @@ const createHostAccount = async (req, res) => {
       await syncHostComplianceSnapshot({
         userId: user._id,
         stripeAccountId: accountId,
-        triggerType: createdNewAccount ? "host_account_created" : "host_account_link_opened",
+        triggerType,
         metadata: { source: "createHostAccount" },
       });
     } catch (err) {
