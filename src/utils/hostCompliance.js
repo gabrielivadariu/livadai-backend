@@ -15,6 +15,7 @@ const normalizeName = (value = "") =>
 const cleanStringList = (value) => (Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : []);
 const joinName = (firstName, lastName) => [firstName, lastName].filter(Boolean).join(" ").trim();
 const isSupportedExternalAccount = (item) => ["bank_account", "card"].includes(String(item?.object || ""));
+const isEmailLike = (value = "") => String(value || "").includes("@");
 
 const detectNameMatchState = (livadaiName, stripeLegalName) => {
   const local = normalizeName(livadaiName);
@@ -109,7 +110,8 @@ const collectComplianceIssues = (snapshot) => {
   if (!snapshot) return ["NO_COMPLIANCE_SNAPSHOT"];
   const issues = [];
   if (snapshot.nameMatchState === "MISMATCH") issues.push("NAME_MISMATCH");
-  if (snapshot.nameMatchState === "MISSING_STRIPE_NAME") issues.push("STRIPE_NAME_MISSING");
+  if (!snapshot.stripeLegalName && !snapshot.stripeDisplayName) issues.push("STRIPE_NAME_MISSING");
+  if (!snapshot.stripeLegalName && snapshot.stripeDisplayName) issues.push("STRIPE_LEGAL_NAME_MISSING");
   if (!snapshot.bankLast4) issues.push("BANK_REFERENCE_MISSING");
   if (snapshot.requirementsDisabledReason) issues.push("STRIPE_DISABLED");
   if ((snapshot.requirementsCurrentlyDue || []).length > 0) issues.push("STRIPE_REQUIREMENTS_DUE");
@@ -145,6 +147,13 @@ const syncHostComplianceSnapshot = async ({
   const representativeName = await getRepresentativeNameFromStripe(accountId, account);
   const legalName = buildStripeLegalName(account) || representativeName;
   const displayName = getFallbackStripeDisplayName(account) || legalName || String(account?.email || "").trim();
+  const stripeNameSource = legalName
+    ? "LEGAL_OR_REPRESENTATIVE"
+    : isEmailLike(displayName)
+      ? "EMAIL_FALLBACK"
+      : displayName
+        ? "DISPLAY_NAME"
+        : "NONE";
   const businessType = String(account?.business_type || "").toLowerCase();
   const bank = await pickBankAccount(accountId, account);
   const bankObjectType = String(bank?.object || "").toLowerCase();
@@ -152,9 +161,11 @@ const syncHostComplianceSnapshot = async ({
     String(bank?.bank_name || "").trim() ||
     (bankObjectType === "card" ? `${String(bank?.brand || "Card").toUpperCase()} card` : "");
   const bankLast4 = String(bank?.last4 || "").trim();
+  const bankReferenceSource = bankLast4 ? (bankObjectType === "card" ? "CARD_LAST4" : "BANK_LAST4") : "NONE";
 
   const livadaiName = String(user.displayName || user.display_name || user.name || "").trim();
-  const matchState = detectNameMatchState(livadaiName, legalName);
+  const nameForMatch = legalName || (isEmailLike(displayName) ? "" : displayName);
+  const matchState = detectNameMatchState(livadaiName, nameForMatch);
 
   const snapshot = await HostComplianceSnapshot.create({
     user: user._id,
@@ -164,12 +175,14 @@ const syncHostComplianceSnapshot = async ({
     stripeBusinessType: businessType,
     stripeLegalName: legalName,
     stripeDisplayName: displayName,
+    stripeNameSource,
     nameMatchState: matchState,
     externalAccountId: String(bank?.id || ""),
     bankName,
     bankLast4,
     bankCountry: String(bank?.country || DEFAULT_BANK_COUNTRY),
     bankCurrency: String(bank?.currency || account?.default_currency || ""),
+    bankReferenceSource,
     isStripeChargesEnabled: !!account?.charges_enabled,
     isStripePayoutsEnabled: !!account?.payouts_enabled,
     isStripeDetailsSubmitted: !!account?.details_submitted,

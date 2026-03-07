@@ -382,12 +382,14 @@ const serializeAdminComplianceHost = (user, snapshot = null) => {
     livadaiName: base.name || "",
     stripeLegalName: String(snapshot?.stripeLegalName || ""),
     stripeDisplayName: String(snapshot?.stripeDisplayName || ""),
+    stripeNameSource: String(snapshot?.stripeNameSource || ""),
     stripeBusinessType: String(snapshot?.stripeBusinessType || ""),
     nameMatchState: snapshot?.nameMatchState || "NO_SNAPSHOT",
     bankName,
     bankLast4,
     bankCountry: String(snapshot?.bankCountry || ""),
     bankCurrency: String(snapshot?.bankCurrency || ""),
+    bankReferenceSource: String(snapshot?.bankReferenceSource || ""),
     bankReference,
     requirementsDisabledReason: String(snapshot?.requirementsDisabledReason || ""),
     requirementsCurrentlyDueCount: Number(snapshot?.requirementsCurrentlyDue?.length || 0),
@@ -1467,7 +1469,7 @@ router.get("/hosts/:id", async (req, res) => {
         .sort({ createdAt: -1 })
         .limit(10)
         .select(
-          "createdAt nameMatchState livadaiName stripeLegalName stripeDisplayName stripeBusinessType bankName bankLast4 bankCountry bankCurrency requirementsDisabledReason requirementsCurrentlyDue isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted triggerType triggerEventType"
+          "createdAt nameMatchState livadaiName stripeLegalName stripeDisplayName stripeNameSource stripeBusinessType bankName bankLast4 bankCountry bankCurrency bankReferenceSource requirementsDisabledReason requirementsCurrentlyDue isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted triggerType triggerEventType"
         )
         .lean(),
       Experience.countDocuments({ host: hostObjectId }),
@@ -1597,11 +1599,13 @@ router.get("/hosts/:id", async (req, res) => {
         livadaiName: row.livadaiName || "",
         stripeLegalName: row.stripeLegalName || "",
         stripeDisplayName: row.stripeDisplayName || "",
+        stripeNameSource: row.stripeNameSource || "",
         stripeBusinessType: row.stripeBusinessType || "",
         bankName: row.bankName || "",
         bankLast4: row.bankLast4 || "",
         bankCountry: row.bankCountry || "",
         bankCurrency: row.bankCurrency || "",
+        bankReferenceSource: row.bankReferenceSource || "",
         requirementsDisabledReason: row.requirementsDisabledReason || "",
         requirementsCurrentlyDueCount: Number(row.requirementsCurrentlyDue?.length || 0),
         stripeFlags: {

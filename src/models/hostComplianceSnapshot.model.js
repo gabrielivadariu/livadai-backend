@@ -9,6 +9,7 @@ const hostComplianceSnapshotSchema = new mongoose.Schema(
     stripeBusinessType: { type: String, default: "" },
     stripeLegalName: { type: String, default: "" },
     stripeDisplayName: { type: String, default: "" },
+    stripeNameSource: { type: String, default: "" },
     nameMatchState: {
       type: String,
       enum: ["MATCH", "MISMATCH", "MISSING_STRIPE_NAME", "MISSING_LIVADAI_NAME", "UNKNOWN"],
@@ -20,6 +21,7 @@ const hostComplianceSnapshotSchema = new mongoose.Schema(
     bankLast4: { type: String, default: "" },
     bankCountry: { type: String, default: "" },
     bankCurrency: { type: String, default: "" },
+    bankReferenceSource: { type: String, default: "" },
     isStripeChargesEnabled: { type: Boolean, default: false },
     isStripePayoutsEnabled: { type: Boolean, default: false },
     isStripeDetailsSubmitted: { type: Boolean, default: false },
