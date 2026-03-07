@@ -31,17 +31,25 @@ const detectNameMatchState = (livadaiName, stripeLegalName) => {
 
 const buildStripeLegalName = (account) => {
   const businessType = String(account?.business_type || "").toLowerCase();
+  const individualName = [account?.individual?.first_name, account?.individual?.last_name].filter(Boolean).join(" ").trim();
+  const companyName = String(account?.company?.name || "").trim();
   if (businessType === "individual") {
-    return [account?.individual?.first_name, account?.individual?.last_name].filter(Boolean).join(" ").trim();
+    return individualName;
   }
   if (businessType === "company") {
-    return String(account?.company?.name || "").trim();
+    return companyName;
   }
-  return "";
+  return companyName || individualName || "";
 };
 
 const getFallbackStripeName = (account) =>
-  String(account?.business_profile?.name || account?.settings?.dashboard?.display_name || "").trim();
+  String(
+    account?.business_profile?.name ||
+      account?.settings?.dashboard?.display_name ||
+      account?.company?.name ||
+      account?.email ||
+      ""
+  ).trim();
 
 const pickBankAccount = async (stripeAccountId, account) => {
   const defaultExternal = String(account?.default_external_account || "").trim();
