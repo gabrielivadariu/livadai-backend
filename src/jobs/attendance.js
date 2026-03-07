@@ -5,13 +5,15 @@ const { sendEmail } = require("../utils/mailer");
 const { buildAttendanceReminderEmail, formatExperienceDate } = require("../utils/emailTemplates");
 const User = require("../models/user.model");
 
+const FALLBACK_EXPERIENCE_DURATION_MINUTES = 120;
+
 const setupAttendanceJob = () => {
   setInterval(async () => {
     const now = new Date();
     const cutoff = new Date(now.getTime() - 48 * 60 * 60 * 1000);
     try {
       const bookings = await Booking.find({
-        status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"] },
+        status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "CONFIRMED"] },
         attendanceConfirmed: false,
       }).populate("experience", "endsAt endDate startsAt startDate host title");
 
@@ -28,8 +30,8 @@ const setupAttendanceJob = () => {
         }
         if (!endDate && startDate) {
           if (!Number.isNaN(startDate.getTime())) {
-            // If duration is unknown, assume 24h after start as end time.
-            endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
+            // If duration is unknown, use a conservative default duration.
+            endDate = new Date(startDate.getTime() + FALLBACK_EXPERIENCE_DURATION_MINUTES * 60 * 1000);
           }
         }
         let hardDeadline = null;

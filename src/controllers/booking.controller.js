@@ -13,6 +13,16 @@ const { isPayoutEligible, logPayoutAttempt } = require("../utils/payout");
 const { sendContentReportEmail, sendDisputeEmail, sendUserReportEmail } = require("../utils/reports");
 const { recalcTrustedParticipant } = require("../utils/trust");
 
+const FALLBACK_EXPERIENCE_DURATION_MINUTES = 120;
+const reviewEligibleStatuses = new Set([
+  "COMPLETED",
+  "AUTO_COMPLETED",
+  "PAID",
+  "DEPOSIT_PAID",
+  "PENDING_ATTENDANCE",
+  "CONFIRMED",
+]);
+
 const getExperienceEndDate = (exp) => {
   if (!exp) return null;
   const rawEnd = exp.endsAt || exp.endDate;
@@ -30,7 +40,7 @@ const getExperienceEndDate = (exp) => {
   if (rawStart) {
     const startDate = new Date(rawStart);
     if (!Number.isNaN(startDate.getTime())) {
-      return new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
+      return new Date(startDate.getTime() + FALLBACK_EXPERIENCE_DURATION_MINUTES * 60 * 1000);
     }
   }
   return null;
@@ -139,12 +149,12 @@ const getMyBookings = async (req, res) => {
       const endDate = getExperienceEndDate(exp);
       const payType = paymentMap.get(b._id.toString());
       let effectiveStatus = b.status;
-      if (payType && b.status === "PENDING") {
+      if (payType && ["PENDING", "CONFIRMED"].includes(String(b.status || ""))) {
         effectiveStatus = payType === "DEPOSIT" ? "DEPOSIT_PAID" : "PAID";
-        pendingUpdates.push({ bookingId: b._id, status: effectiveStatus });
+        pendingUpdates.push({ bookingId: b._id, currentStatus: b.status, status: effectiveStatus });
       }
       const eligible =
-        effectiveStatus === "COMPLETED" &&
+        reviewEligibleStatuses.has(String(effectiveStatus || "")) &&
         endDate &&
         !Number.isNaN(endDate.getTime()) &&
         now > endDate;
@@ -162,7 +172,7 @@ const getMyBookings = async (req, res) => {
         await Booking.bulkWrite(
           pendingUpdates.map((u) => ({
             updateOne: {
-              filter: { _id: u.bookingId, status: "PENDING" },
+              filter: { _id: u.bookingId, status: u.currentStatus },
               update: { $set: { status: u.status } },
             },
           }))

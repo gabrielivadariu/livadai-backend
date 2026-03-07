@@ -7,6 +7,31 @@ const { deleteCloudinaryUrls, getCloudinaryInfo } = require("../utils/cloudinary
 const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 
 const bookingStatusesForStats = new Set(["PAID", "COMPLETED", "DEPOSIT_PAID"]);
+const reviewAllowedBookingStatuses = new Set(["COMPLETED", "AUTO_COMPLETED", "PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "CONFIRMED"]);
+const FALLBACK_EXPERIENCE_DURATION_MINUTES = 120;
+
+const getExperienceEndDate = (exp) => {
+  if (!exp) return null;
+  const rawEnd = exp?.endsAt || exp?.endDate;
+  if (rawEnd) {
+    const endDate = new Date(rawEnd);
+    if (!Number.isNaN(endDate.getTime())) return endDate;
+  }
+  const rawStart = exp?.startsAt || exp?.startDate;
+  if (rawStart && exp?.durationMinutes) {
+    const startDate = new Date(rawStart);
+    if (!Number.isNaN(startDate.getTime())) {
+      return new Date(startDate.getTime() + Number(exp.durationMinutes) * 60 * 1000);
+    }
+  }
+  if (rawStart) {
+    const startDate = new Date(rawStart);
+    if (!Number.isNaN(startDate.getTime())) {
+      return new Date(startDate.getTime() + FALLBACK_EXPERIENCE_DURATION_MINUTES * 60 * 1000);
+    }
+  }
+  return null;
+};
 
 const computeHostStats = async (hostId) => {
   const now = new Date();
@@ -292,17 +317,19 @@ const addHostReview = async (req, res) => {
       return res.status(400).json({ message: "experienceId, bookingId and rating required" });
     }
     const host = await User.findById(id);
-    if (!host || host.role !== "HOST") return res.status(404).json({ message: "Host not found" });
+    if (!host || !["HOST", "BOTH"].includes(String(host.role || "").toUpperCase())) {
+      return res.status(404).json({ message: "Host not found" });
+    }
 
     const booking = await Booking.findOne({
       _id: bookingId,
       experience: experienceId,
       host: id,
       explorer: req.user.id,
-      status: "COMPLETED",
+      status: { $in: Array.from(reviewAllowedBookingStatuses) },
     }).populate("experience", "endsAt endDate startsAt startDate durationMinutes");
     if (!booking) {
-      return res.status(403).json({ message: "Cannot review without a completed booking." });
+      return res.status(403).json({ message: "Cannot review without an eligible booking." });
     }
 
     const existing = await Review.findOne({ booking: bookingId, user: req.user.id });
@@ -311,32 +338,7 @@ const addHostReview = async (req, res) => {
     }
 
     const exp = booking.experience;
-    const rawEnd = exp?.endsAt || exp?.endDate;
-    let endDate = rawEnd ? new Date(rawEnd) : null;
-    if (!endDate && exp?.startsAt && exp?.durationMinutes) {
-      const startDate = new Date(exp.startsAt);
-      if (!Number.isNaN(startDate.getTime())) {
-        endDate = new Date(startDate.getTime() + Number(exp.durationMinutes) * 60 * 1000);
-      }
-    }
-    if (!endDate && exp?.startDate && exp?.durationMinutes) {
-      const startDate = new Date(exp.startDate);
-      if (!Number.isNaN(startDate.getTime())) {
-        endDate = new Date(startDate.getTime() + Number(exp.durationMinutes) * 60 * 1000);
-      }
-    }
-    if (!endDate && exp?.startsAt) {
-      const startDate = new Date(exp.startsAt);
-      if (!Number.isNaN(startDate.getTime())) {
-        endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
-      }
-    }
-    if (!endDate && exp?.startDate) {
-      const startDate = new Date(exp.startDate);
-      if (!Number.isNaN(startDate.getTime())) {
-        endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
-      }
-    }
+    const endDate = getExperienceEndDate(exp);
     if (!endDate || Number.isNaN(endDate.getTime())) {
       return res.status(400).json({ message: "Experience end date missing." });
     }
