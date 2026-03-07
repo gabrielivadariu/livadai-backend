@@ -464,7 +464,7 @@ const getLatestHostComplianceMap = async (userIds = []) => {
 };
 
 const syncHostComplianceSnapshotSafe = async (userId, triggerEventType = "") => {
-  if (!userId) return null;
+  if (!userId) return { snapshot: null, error: "Missing user id" };
   try {
     const snapshot = await syncHostComplianceSnapshot({
       userId,
@@ -472,14 +472,18 @@ const syncHostComplianceSnapshotSafe = async (userId, triggerEventType = "") => 
       triggerEventType: triggerEventType || "admin.hosts.view",
       metadata: { source: "admin.routes" },
     });
-    return snapshot ? (typeof snapshot.toObject === "function" ? snapshot.toObject() : snapshot) : null;
+    return {
+      snapshot: snapshot ? (typeof snapshot.toObject === "function" ? snapshot.toObject() : snapshot) : null,
+      error: "",
+    };
   } catch (err) {
+    const message = err?.message || String(err);
     console.error("Admin compliance sync error", {
       userId: String(userId),
       triggerEventType: triggerEventType || "admin.hosts.view",
-      message: err?.message || String(err),
+      message,
     });
-    return null;
+    return { snapshot: null, error: String(message) };
   }
 };
 
@@ -489,9 +493,14 @@ const ensureComplianceMapHasStripeData = async (rows = [], complianceMap = new M
 
   for (const row of rows) {
     const id = String(row?._id || "");
-    if (!id || map.has(id) || !row?.stripeAccountId) continue;
+    if (!id || !row?.stripeAccountId) continue;
+    const existingSnapshot = map.get(id);
+    const hasStripeName = String(existingSnapshot?.stripeLegalName || existingSnapshot?.stripeDisplayName || "").trim();
+    const hasBankRef = String(existingSnapshot?.bankLast4 || "").trim();
+    if (existingSnapshot && hasStripeName && hasBankRef) continue;
+
     const synced = await syncHostComplianceSnapshotSafe(row._id, triggerEventType || "admin.hosts.list");
-    if (synced) map.set(id, synced);
+    if (synced?.snapshot) map.set(id, synced.snapshot);
   }
 
   return map;
@@ -1370,6 +1379,7 @@ router.get("/hosts", async (req, res) => {
 router.get("/hosts/:id", async (req, res) => {
   try {
     const { id } = req.params;
+    const forceSync = parseBoolFilter(req.query?.sync) === true;
     if (!isObjectIdLike(id)) {
       return res.status(400).json({ message: "Invalid host id" });
     }
@@ -1419,9 +1429,18 @@ router.get("/hosts/:id", async (req, res) => {
     }
 
     const now = new Date();
+    let complianceSyncWarning = "";
     let complianceSnapshot = await HostComplianceSnapshot.findOne({ user: hostObjectId }).sort({ createdAt: -1 }).lean();
-    if (!complianceSnapshot && host.stripeAccountId) {
-      complianceSnapshot = await syncHostComplianceSnapshotSafe(hostObjectId, "admin.hosts.details");
+    if (host.stripeAccountId && (!complianceSnapshot || forceSync)) {
+      const syncResult = await syncHostComplianceSnapshotSafe(
+        hostObjectId,
+        forceSync ? "admin.hosts.details.force_sync" : "admin.hosts.details"
+      );
+      if (syncResult?.snapshot) {
+        complianceSnapshot = syncResult.snapshot;
+      } else if (syncResult?.error) {
+        complianceSyncWarning = syncResult.error;
+      }
     }
 
     const [
@@ -1618,6 +1637,7 @@ router.get("/hosts/:id", async (req, res) => {
         })
       ),
       recentReports: recentReportsRaw.map((row) => serializeAdminReport(row, { now })),
+      complianceSyncWarning: complianceSyncWarning || "",
     });
   } catch (err) {
     console.error("Admin host details error", err);
