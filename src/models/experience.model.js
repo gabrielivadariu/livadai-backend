@@ -16,7 +16,7 @@ const experienceSchema = new mongoose.Schema(
     soldOut: { type: Boolean, default: false },
     status: {
       type: String,
-      enum: ["draft", "published", "cancelled", "CANCELLED", "DISABLED", "NO_BOOKINGS"],
+      enum: ["draft", "published", "cancelled", "CANCELLED", "DISABLED", "NO_BOOKINGS", "ARCHIVED"],
       default: "published",
     },
     environment: { type: String, enum: ["INDOOR", "OUTDOOR", "BOTH"], default: "OUTDOOR" },

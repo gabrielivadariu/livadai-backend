@@ -3,6 +3,56 @@ const Booking = require("../models/booking.model");
 const { deleteCloudinaryUrls } = require("../utils/cloudinary-media");
 const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 
+const CANCELLATION_BOOKING_STATUSES = new Set(["CANCELLED", "REFUNDED", "REFUND_FAILED"]);
+const OCCUPIED_BOOKING_STATUSES = [
+  "PAID",
+  "DEPOSIT_PAID",
+  "PENDING_ATTENDANCE",
+  "COMPLETED",
+  "AUTO_COMPLETED",
+  "NO_SHOW",
+  "DISPUTED",
+  "DISPUTE_WON",
+  "DISPUTE_LOST",
+];
+
+const normalizeStatus = (value) => String(value || "").toUpperCase().trim();
+
+const isCancellationOnlyFlow = (statuses) => {
+  if (!Array.isArray(statuses) || statuses.length === 0) return false;
+  return statuses.every((status) => CANCELLATION_BOOKING_STATUSES.has(status));
+};
+
+const getExperienceBookingStatuses = async (experienceId) => {
+  const statuses = await Booking.distinct("status", { experience: experienceId });
+  return statuses.map(normalizeStatus).filter(Boolean);
+};
+
+const recomputeExperienceAvailability = async ({ experienceId, maxParticipants }) => {
+  const total = Math.max(1, Number(maxParticipants || 1));
+  const occupiedAgg = await Booking.aggregate([
+    {
+      $match: {
+        experience: experienceId,
+        status: { $in: OCCUPIED_BOOKING_STATUSES },
+      },
+    },
+    {
+      $group: {
+        _id: "$experience",
+        occupied: { $sum: { $ifNull: ["$quantity", 1] } },
+      },
+    },
+  ]);
+  const occupied = Number(occupiedAgg?.[0]?.occupied || 0);
+  const remainingSpots = Math.max(0, total - occupied);
+  return {
+    occupied,
+    remainingSpots,
+    soldOut: remainingSpots <= 0,
+  };
+};
+
 const getExperienceEndDate = (exp) => {
   if (!exp) return null;
   const rawEnd = exp.endsAt || exp.endDate;
@@ -106,11 +156,11 @@ const removeExperienceMediaIfEligible = async ({
   return true;
 };
 
-      // Runs periodically to hide/delete stale experiences.
-      // Rules:
-      // - If experience has ended AND has no bookings -> archive (read-only history).
-      // - If experience has ended AND has bookings -> mark inactive/cancelled.
-      // - If experience is sold out / no remaining spots -> mark inactive (keep record for bookings).
+// Runs periodically to hide/delete stale experiences.
+// Rules:
+// - If experience has ended AND has no bookings -> archive (read-only history).
+// - If experience has ended AND has bookings -> mark inactive/archived (not cancelled).
+// - If experience is sold out / no remaining spots -> mark sold out.
 const setupCleanupJob = () => {
   const run = async () => {
     const now = new Date();
@@ -166,28 +216,72 @@ const setupCleanupJob = () => {
           if (!mediaHandled) await exp.save();
           console.log("Cleanup: archived expired experience with no bookings", { id: exp._id.toString() });
         } else {
+          const bookingStatuses = await getExperienceBookingStatuses(exp._id);
+          const cancelledByHostFlow = isCancellationOnlyFlow(bookingStatuses);
           exp.isActive = false;
-          exp.status = "cancelled";
-          exp.soldOut = true;
-          exp.remainingSpots = 0;
+          if (cancelledByHostFlow) {
+            exp.status = "CANCELLED";
+            exp.soldOut = true;
+            exp.remainingSpots = 0;
+          } else {
+            exp.status = "ARCHIVED";
+            const availability = await recomputeExperienceAvailability({
+              experienceId: exp._id,
+              maxParticipants: exp.maxParticipants,
+            });
+            exp.remainingSpots = availability.remainingSpots;
+            exp.soldOut = availability.soldOut;
+          }
           const mediaHandled = await removeExperienceMediaIfEligible({
             exp,
             eligibleAt: getExperienceEndDate(exp),
             mediaCutoff,
             activeStatuses,
-            reason: "ended-with-bookings",
+            reason: cancelledByHostFlow ? "ended-with-cancelled-bookings" : "ended-with-bookings",
           });
           if (!mediaHandled) await exp.save();
-          console.log("Cleanup: archived expired experience with bookings", { id: exp._id.toString(), bookingsCount });
+          console.log("Cleanup: archived expired experience with bookings", {
+            id: exp._id.toString(),
+            bookingsCount,
+            status: exp.status,
+          });
         }
       }
 
+      // Repair old wrong states: previously-ended experiences with bookings were marked as cancelled.
+      const potentiallyWrongCancelled = await Experience.find({
+        isActive: false,
+        status: { $in: ["cancelled", "CANCELLED"] },
+      }).select("_id status endsAt endDate startsAt startDate durationMinutes maxParticipants soldOut remainingSpots");
+
+      for (const exp of potentiallyWrongCancelled) {
+        const endedAt = getExperienceEndDate(exp);
+        if (!endedAt || endedAt > now) continue;
+        const bookingStatuses = await getExperienceBookingStatuses(exp._id);
+        if (!bookingStatuses.length || isCancellationOnlyFlow(bookingStatuses)) continue;
+
+        const availability = await recomputeExperienceAvailability({
+          experienceId: exp._id,
+          maxParticipants: exp.maxParticipants,
+        });
+        const previousStatus = exp.status;
+        exp.status = "ARCHIVED";
+        exp.remainingSpots = availability.remainingSpots;
+        exp.soldOut = availability.soldOut;
+        await exp.save();
+        console.log("Cleanup: fixed wrongly-cancelled experience status", {
+          id: exp._id.toString(),
+          from: previousStatus,
+          to: exp.status,
+        });
+      }
+
       // Additional pass for already inactive archived experiences:
-      // this catches NO_BOOKINGS / CANCELLED entries that were not eligible
+      // this catches NO_BOOKINGS / CANCELLED / ARCHIVED entries that were not eligible
       // at the moment they were archived.
       const inactiveArchived = await Experience.find({
         isActive: false,
-        status: { $in: ["NO_BOOKINGS", "CANCELLED", "cancelled"] },
+        status: { $in: ["NO_BOOKINGS", "CANCELLED", "cancelled", "ARCHIVED"] },
         $or: [{ mediaCleanedAt: { $exists: false } }, { mediaCleanedAt: null }],
       }).select("status endsAt endDate startsAt startDate durationMinutes mediaRefs images videos mainImageUrl coverImageUrl mediaCleanedAt updatedAt");
 
