@@ -8,6 +8,7 @@ const {
   deleteExperienceGroup,
   listExperiences,
   getExperienceById,
+  getExperienceAvailability,
   getExperiencesMap,
   cancelExperience,
 } = require("../controllers/experience.controller");
@@ -26,6 +27,7 @@ router.post("/:id/cancel", authenticate, authorize(["HOST"]), cancelExperience);
 
 // Explorer/public
 router.get("/map", getExperiencesMap);
+router.get("/:id/availability", optionalAuthenticate, getExperienceAvailability);
 router.get("/:id", optionalAuthenticate, getExperienceById);
 router.get("/", listExperiences);
 

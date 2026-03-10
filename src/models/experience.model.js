@@ -8,6 +8,8 @@ const experienceSchema = new mongoose.Schema(
     description: { type: String },
     category: { type: String },
     price: { type: Number },
+    pricingMode: { type: String, enum: ["PER_PERSON", "PER_GROUP"], default: "PER_PERSON" },
+    groupPackageSize: { type: Number, default: null },
     durationMinutes: { type: Number },
     currencyCode: { type: String, default: "EUR" },
     activityType: { type: String, enum: ["INDIVIDUAL", "GROUP"], default: "INDIVIDUAL" },

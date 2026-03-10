@@ -12,7 +12,7 @@ const User = require("../models/user.model");
 const createCheckout = async (req, res) => {
   try {
     const { experienceId, quantity } = req.body;
-    const qty = Math.max(1, Number(quantity) || 1);
+    const requestedQty = Math.max(1, Number(quantity) || 1);
     if (!experienceId) return res.status(400).json({ message: "experienceId required" });
 
     const exp = await Experience.findById(experienceId);
@@ -51,12 +51,19 @@ const createCheckout = async (req, res) => {
       return res.status(400).json({ message: "Experience has already started and cannot be booked." });
     }
 
+    const pricingMode = String(exp.pricingMode || "").toUpperCase() === "PER_GROUP" ? "PER_GROUP" : "PER_PERSON";
+    const groupPackageSize = Math.max(1, Number(exp.groupPackageSize) || Number(exp.maxParticipants) || 1);
+    let seatQty = exp.activityType === "INDIVIDUAL" ? 1 : requestedQty;
+    if (pricingMode === "PER_GROUP") {
+      seatQty = groupPackageSize;
+    }
+
     // availability rules
-    if (exp.activityType === "INDIVIDUAL" && qty !== 1) {
+    if (exp.activityType === "INDIVIDUAL" && seatQty !== 1) {
       return res.status(400).json({ message: "Individual activity allows a single seat" });
     }
     const available = exp.remainingSpots ?? exp.maxParticipants ?? 1;
-    if (available < qty || exp.soldOut) {
+    if (available < seatQty || exp.soldOut) {
       return res.status(400).json({ message: "Not enough spots available" });
     }
 
@@ -78,14 +85,15 @@ const createCheckout = async (req, res) => {
     const depositCurrency = "ron";
     const serviceFeeAmountMinor = 2 * 100;
     const unitAmount = isServiceFee ? serviceFeeAmountMinor : Math.round((exp.price || 0) * 100);
-    const amount = unitAmount * qty;
+    const checkoutQuantity = !isServiceFee && pricingMode === "PER_GROUP" ? 1 : seatQty;
+    const amount = unitAmount * checkoutQuantity;
     if (amount <= 0) return res.status(400).json({ message: "Invalid price" });
 
     const booking = await Booking.create({
       experience: exp._id,
       explorer: req.user.id,
       host: exp.host,
-      quantity: qty,
+      quantity: seatQty,
       amount: amount,
       currency: baseCurrency,
       depositAmount: 0,
@@ -125,7 +133,7 @@ const createCheckout = async (req, res) => {
             product_data: { name: isServiceFee ? `Service fee for ${exp.title || "Experience"}` : exp.title || "Experience" },
             unit_amount: unitAmount,
           },
-          quantity: qty,
+          quantity: checkoutQuantity,
         },
       ],
       success_url: successUrl,
@@ -134,7 +142,9 @@ const createCheckout = async (req, res) => {
         bookingId: booking._id.toString(),
         experienceId: exp._id.toString(),
         explorerId: (req.user?._id || req.user?.id)?.toString(),
-        quantity: qty.toString(),
+        quantity: seatQty.toString(),
+        checkoutQuantity: checkoutQuantity.toString(),
+        pricingMode,
         isDeposit: "false",
         isServiceFee: isServiceFee ? "true" : "false",
       },

@@ -9,6 +9,16 @@ const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 const bookingStatusesForStats = new Set(["PAID", "COMPLETED", "DEPOSIT_PAID"]);
 const reviewAllowedBookingStatuses = new Set(["COMPLETED", "AUTO_COMPLETED", "PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "CONFIRMED"]);
 const FALLBACK_EXPERIENCE_DURATION_MINUTES = 120;
+const bookingStatusesForAvailability = ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"];
+
+const toDateSafe = (value) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+};
+
+const extractExperienceStart = (exp) => exp?.startsAt || exp?.startDate || null;
 
 const getExperienceEndDate = (exp) => {
   if (!exp) return null;
@@ -163,28 +173,77 @@ const getHostReviews = async (_req, res) => {
 const getHostActivities = async (req, res) => {
   try {
     const { id } = req.params;
-    const limit = Number(req.query.limit) || 10;
-    const activities = await Experience.find({ host: id })
-      .sort({ startDate: -1, createdAt: -1 })
+    const limit = Math.max(1, Number(req.query.limit) || 200);
+    const includeSlots = String(req.query.includeSlots || "") === "1" || String(req.query.rawSlots || "") === "1";
+    const activities = await Experience.find({ host: id, status: { $nin: ["DISABLED"] } })
+      .sort({ startsAt: -1, createdAt: -1 })
       .limit(limit)
       .lean();
-    const ids = activities.map((a) => a._id);
+    const ids = activities.map((a) => a._id).filter(Boolean);
     if (!ids.length) return res.json([]);
     const bookedAgg = await Booking.aggregate([
-      { $match: { experience: { $in: ids }, status: { $nin: ["CANCELLED", "REFUNDED"] } } },
+      { $match: { experience: { $in: ids }, status: { $in: bookingStatusesForAvailability } } },
       { $group: { _id: "$experience", booked: { $sum: { $ifNull: ["$quantity", 1] } } } },
     ]);
-    const bookedMap = bookedAgg.reduce((acc, b) => {
-      acc[b._id.toString()] = b.booked || 0;
+    const bookedMap = bookedAgg.reduce((acc, row) => {
+      acc[row._id.toString()] = row.booked || 0;
       return acc;
     }, {});
-    const payload = activities.map((exp) => {
-      const total = exp.maxParticipants || 1;
-      const booked = bookedMap[exp._id.toString()] || 0;
+    const withStats = activities.map((exp) => {
+      const total = Number(exp.maxParticipants || 1);
+      const booked = Number(bookedMap[exp._id.toString()] || 0);
       const availableSpots = Math.max(0, total - booked);
       return { ...exp, bookedSpots: booked, availableSpots };
     });
-    return res.json(payload);
+    if (includeSlots) {
+      return res.json(withStats);
+    }
+
+    const groups = new Map();
+    for (const exp of withStats) {
+      const key = exp.scheduleGroupId || String(exp._id);
+      if (!groups.has(key)) {
+        groups.set(key, []);
+      }
+      groups.get(key).push(exp);
+    }
+    const now = Date.now();
+    const grouped = [];
+    for (const [seriesKey, slots] of groups.entries()) {
+      const ordered = slots
+        .slice()
+        .sort(
+          (a, b) =>
+            (toDateSafe(extractExperienceStart(a))?.getTime() || 0) - (toDateSafe(extractExperienceStart(b))?.getTime() || 0)
+        );
+      if (!ordered.length) continue;
+      const upcoming = ordered.filter((slot) => (toDateSafe(extractExperienceStart(slot))?.getTime() || 0) > now);
+      const upcomingBookable = upcoming.filter(
+        (slot) =>
+          slot.isActive !== false &&
+          ["published", "PUBLISHED"].includes(String(slot.status || "")) &&
+          !["cancelled", "CANCELLED"].includes(String(slot.status || "")) &&
+          !slot.soldOut &&
+          Number(slot.availableSpots || 0) > 0
+      );
+      const representative = upcomingBookable[0] || upcoming[0] || ordered[0];
+      grouped.push({
+        ...representative,
+        isSeries: !!representative.scheduleGroupId,
+        seriesId: representative.scheduleGroupId || null,
+        seriesKey,
+        seriesSlotsCount: ordered.length,
+        seriesAvailableSlots: upcomingBookable.length,
+        seriesNextStartsAt: extractExperienceStart(upcoming[0]) || null,
+        seriesFirstStartsAt: extractExperienceStart(ordered[0]) || null,
+        seriesLastEndsAt: ordered[ordered.length - 1]?.endsAt || ordered[ordered.length - 1]?.endDate || null,
+      });
+    }
+
+    grouped.sort(
+      (a, b) => (toDateSafe(extractExperienceStart(b))?.getTime() || 0) - (toDateSafe(extractExperienceStart(a))?.getTime() || 0)
+    );
+    return res.json(grouped);
   } catch (err) {
     console.error("getHostActivities error", err);
     return res.status(500).json({ message: "Server error" });

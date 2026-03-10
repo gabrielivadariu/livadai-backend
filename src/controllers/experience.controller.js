@@ -18,6 +18,104 @@ const { deleteCloudinaryUrls, getCloudinaryInfo, getTargetKey } = require("../ut
 const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 
 const MAX_RECURRING_OCCURRENCES = 240;
+const BOOKING_STATUSES_COUNTED = ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"];
+
+const toDateSafe = (value) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+};
+
+const extractExperienceStart = (exp) => exp?.startsAt || exp?.startDate || null;
+const extractExperienceEnd = (exp) => exp?.endsAt || exp?.endDate || null;
+
+const isExperiencePublished = (exp) => ["published", "PUBLISHED"].includes(String(exp?.status || ""));
+const isExperienceCancelled = (exp) => ["cancelled", "CANCELLED", "DISABLED"].includes(String(exp?.status || ""));
+
+const computeExperienceAvailability = (exp, bookedMap) => {
+  const id = exp?._id?.toString?.() || String(exp?._id || "");
+  const total = Number(exp?.maxParticipants || 1);
+  const booked = Number(bookedMap?.[id] || 0);
+  const availableSpots = Math.max(0, total - booked);
+  return { bookedSpots: booked, availableSpots };
+};
+
+const buildBookedMap = async (experienceIds) => {
+  const ids = (experienceIds || []).filter(Boolean);
+  if (!ids.length) return {};
+  const bookedAgg = await Booking.aggregate([
+    { $match: { experience: { $in: ids }, status: { $in: BOOKING_STATUSES_COUNTED } } },
+    { $group: { _id: "$experience", booked: { $sum: { $ifNull: ["$quantity", 1] } } } },
+  ]);
+  return bookedAgg.reduce((acc, row) => {
+    acc[row._id.toString()] = row.booked || 0;
+    return acc;
+  }, {});
+};
+
+const aggregateExperiencesBySeries = ({ experiences = [], bookedMap = {}, hostDisplayMap = {} }) => {
+  const now = Date.now();
+  const groups = new Map();
+
+  for (const exp of experiences) {
+    const base = typeof exp.toObject === "function" ? exp.toObject() : { ...exp };
+    const stats = computeExperienceAvailability(base, bookedMap);
+    const hostId = base.host?._id?.toString?.() || base.host?.toString?.() || String(base.host || "");
+    const normalized = {
+      ...base,
+      ...stats,
+      hostDisplayName: hostDisplayMap[hostId] || base.hostDisplayName || "",
+    };
+    const key = base.scheduleGroupId || String(base._id);
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    groups.get(key).push(normalized);
+  }
+
+  const result = [];
+  for (const [seriesKey, slots] of groups.entries()) {
+    const ordered = slots
+      .slice()
+      .sort((a, b) => (toDateSafe(extractExperienceStart(a))?.getTime() || 0) - (toDateSafe(extractExperienceStart(b))?.getTime() || 0));
+    if (!ordered.length) continue;
+
+    const upcoming = ordered.filter((slot) => {
+      const startMs = toDateSafe(extractExperienceStart(slot))?.getTime();
+      if (!startMs || startMs <= now) return false;
+      if (slot.isActive === false) return false;
+      if (!isExperiencePublished(slot) || isExperienceCancelled(slot)) return false;
+      return true;
+    });
+    const upcomingBookable = upcoming.filter((slot) => !slot.soldOut && Number(slot.availableSpots || 0) > 0);
+    const representative = upcomingBookable[0] || upcoming[0] || ordered[0];
+    const firstSlot = ordered[0];
+    const lastSlot = ordered[ordered.length - 1];
+    const seriesId = representative.scheduleGroupId || null;
+    const isSeries = !!seriesId;
+
+    result.push({
+      ...representative,
+      isSeries,
+      seriesId,
+      seriesKey,
+      seriesSlotsCount: ordered.length,
+      seriesAvailableSlots: upcomingBookable.length,
+      seriesNextStartsAt: extractExperienceStart(upcoming[0]) || null,
+      seriesFirstStartsAt: extractExperienceStart(firstSlot) || null,
+      seriesLastEndsAt: extractExperienceEnd(lastSlot) || null,
+      seriesRepresentativeId: representative._id,
+      scheduleType: isSeries ? "LONG_TERM" : representative.scheduleType || "ONE_TIME",
+    });
+  }
+
+  return result.sort((a, b) => {
+    const aStart = toDateSafe(extractExperienceStart(a))?.getTime() || 0;
+    const bStart = toDateSafe(extractExperienceStart(b))?.getTime() || 0;
+    return aStart - bStart;
+  });
+};
 
 const validateSchedule = (payload) => {
   if (!payload.startsAt) {
@@ -142,6 +240,25 @@ const prepareExperiencePayload = (inputPayload) => {
     const max = Number(payload.maxParticipants) || 1;
     payload.maxParticipants = max;
     payload.remainingSpots = max;
+  }
+
+  const pricingModeRaw = String(payload.pricingMode || "").toUpperCase();
+  const pricingMode = pricingModeRaw === "PER_GROUP" ? "PER_GROUP" : "PER_PERSON";
+  payload.pricingMode = pricingMode;
+  if (pricingMode === "PER_GROUP") {
+    const fallbackSize = Number(payload.maxParticipants) || 1;
+    const packageSize = Math.max(1, Number(payload.groupPackageSize) || fallbackSize);
+    payload.groupPackageSize = packageSize;
+    if (payload.activityType !== "GROUP") {
+      payload.activityType = "GROUP";
+      payload.maxParticipants = packageSize;
+      payload.remainingSpots = packageSize;
+    } else if (payload.maxParticipants < packageSize) {
+      payload.maxParticipants = packageSize;
+      payload.remainingSpots = packageSize;
+    }
+  } else {
+    payload.groupPackageSize = null;
   }
 
   payload.currencyCode = "RON";
@@ -277,8 +394,17 @@ const getMyExperiences = async (req, res) => {
       host: req.user.id,
       isActive: true,
       status: { $nin: ["DISABLED"] },
-    });
-    return res.json(exps);
+    }).sort({ startsAt: 1, createdAt: 1 });
+    const bookedMap = await buildBookedMap(exps.map((exp) => exp._id));
+    if (String(req.query?.rawSlots || "") === "1") {
+      const mapped = exps.map((exp) => ({
+        ...exp.toObject(),
+        ...computeExperienceAvailability(exp, bookedMap),
+      }));
+      return res.json(mapped);
+    }
+    const grouped = aggregateExperiencesBySeries({ experiences: exps, bookedMap });
+    return res.json(grouped);
   } catch (err) {
     console.error("Get my experiences error", err);
     return res.status(500).json({ message: "Server error" });
@@ -316,6 +442,24 @@ const updateExperience = async (req, res) => {
     if (update.currencyCode && update.currencyCode !== "RON") {
       update.currencyCode = "RON";
     }
+    if (update.pricingMode !== undefined) {
+      update.pricingMode = String(update.pricingMode || "").toUpperCase() === "PER_GROUP" ? "PER_GROUP" : "PER_PERSON";
+    }
+    if (update.pricingMode === "PER_GROUP") {
+      if (!update.activityType) update.activityType = "GROUP";
+      const nextGroupPackageSize = Math.max(
+        1,
+        Number(update.groupPackageSize) || Number(update.maxParticipants) || Number(existingExp.groupPackageSize) || 1
+      );
+      update.groupPackageSize = nextGroupPackageSize;
+      if (update.activityType === "GROUP") {
+        const nextMax = Math.max(nextGroupPackageSize, Number(update.maxParticipants) || Number(existingExp.maxParticipants) || 1);
+        update.maxParticipants = nextMax;
+      }
+    }
+    if (update.pricingMode === "PER_PERSON") {
+      update.groupPackageSize = null;
+    }
     if (update.startsAt || update.endsAt || update.durationMinutes) {
       const schedulePayload = {
         startsAt: update.startsAt || update.startDate,
@@ -337,10 +481,48 @@ const updateExperience = async (req, res) => {
     }
     if (update.locationLat) update.latitude = update.locationLat;
     if (update.locationLng) update.longitude = update.locationLng;
-    // Block currency change if bookings exist
+    // Block price/capacity changes if bookings exist
     const existingBookings = await Booking.findOne({ experience: req.params.id });
     if (existingBookings && update.currencyCode && update.currencyCode !== undefined) {
       return res.status(400).json({ message: "Cannot change currency after bookings exist" });
+    }
+    if (
+      existingBookings &&
+      (update.activityType !== undefined ||
+        update.maxParticipants !== undefined ||
+        update.pricingMode !== undefined ||
+        update.groupPackageSize !== undefined)
+    ) {
+      return res.status(400).json({ message: "Cannot change pricing or participant configuration after bookings exist" });
+    }
+
+    const nextActivityType = update.activityType || existingExp.activityType || "INDIVIDUAL";
+    if (nextActivityType === "INDIVIDUAL") {
+      update.maxParticipants = 1;
+      if (!existingBookings) update.remainingSpots = 1;
+      if (update.pricingMode === "PER_GROUP") {
+        update.activityType = "GROUP";
+      }
+    } else if (nextActivityType === "GROUP") {
+      const max = Math.max(1, Number(update.maxParticipants) || Number(existingExp.maxParticipants) || 1);
+      update.maxParticipants = max;
+      if (!existingBookings) {
+        update.remainingSpots = max;
+      }
+    }
+    if (update.pricingMode === "PER_GROUP") {
+      update.activityType = "GROUP";
+      const packageSize = Math.max(
+        1,
+        Number(update.groupPackageSize) || Number(existingExp.groupPackageSize) || Number(update.maxParticipants) || 1
+      );
+      update.groupPackageSize = packageSize;
+      if (!Number(update.maxParticipants) || Number(update.maxParticipants) < packageSize) {
+        update.maxParticipants = packageSize;
+      }
+      if (!existingBookings) {
+        update.remainingSpots = Number(update.maxParticipants);
+      }
     }
 
     const mergedMedia = {
@@ -671,7 +853,7 @@ const listExperiences = async (req, res) => {
       if (minPrice) filters.price.$gte = Number(minPrice);
       if (maxPrice) filters.price.$lte = Number(maxPrice);
     }
-    const exps = await Experience.find(filters);
+    const exps = await Experience.find(filters).sort({ startsAt: 1, createdAt: 1 });
 
     const hostIds = Array.from(
       new Set(
@@ -690,23 +872,11 @@ const listExperiences = async (req, res) => {
       return acc;
     }, {});
 
-    // Compute booked spots for these experiences
-    const ids = exps.map((e) => e._id);
-    const bookedAgg = await Booking.aggregate([
-      { $match: { experience: { $in: ids }, status: { $in: ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"] } } },
-      { $group: { _id: "$experience", booked: { $sum: { $ifNull: ["$quantity", 1] } } } },
-    ]);
-    const bookedMap = bookedAgg.reduce((acc, b) => {
-      acc[b._id.toString()] = b.booked || 0;
-      return acc;
-    }, {});
-
-    const mapped = exps.map((e) => {
-      const total = e.maxParticipants || 1;
-      const booked = bookedMap[e._id.toString()] || 0;
-      const availableSpots = Math.max(0, total - booked);
-      const hostDisplayName = hostMap[e.host?.toString?.() || ""] || "";
-      return { ...e.toObject(), bookedSpots: booked, availableSpots, hostDisplayName };
+    const bookedMap = await buildBookedMap(exps.map((exp) => exp._id));
+    const mapped = aggregateExperiencesBySeries({
+      experiences: exps,
+      bookedMap,
+      hostDisplayMap: hostMap,
     });
 
     return res.json(mapped);
@@ -740,22 +910,118 @@ const getExperienceById = async (req, res) => {
       return res.status(404).json({ message: "Experience not found" });
     }
 
-    const bookedAgg = await Booking.aggregate([
-      {
-        $match: {
-          experience: new mongoose.Types.ObjectId(exp._id),
-          status: { $in: ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"] },
-        },
-      },
-      { $group: { _id: "$experience", booked: { $sum: { $ifNull: ["$quantity", 1] } } } },
-    ]);
-    const booked = bookedAgg?.[0]?.booked || 0;
-    const total = exp.maxParticipants || 1;
-    const availableSpots = Math.max(0, total - booked);
+    let relatedSlots = [exp];
+    if (exp.scheduleGroupId) {
+      relatedSlots = await Experience.find({
+        host: exp.host?._id || exp.host,
+        scheduleGroupId: exp.scheduleGroupId,
+        status: { $nin: ["DISABLED"] },
+      }).sort({ startsAt: 1, createdAt: 1 });
+      if (!relatedSlots.length) relatedSlots = [exp];
+    }
 
-    return res.json({ ...exp.toObject(), bookedSpots: booked, availableSpots });
+    const bookedMap = await buildBookedMap(relatedSlots.map((slot) => slot._id));
+    const expStats = computeExperienceAvailability(exp, bookedMap);
+
+    const now = Date.now();
+    const slotStats = relatedSlots.map((slotDoc) => {
+      const slot = typeof slotDoc.toObject === "function" ? slotDoc.toObject() : { ...slotDoc };
+      const stats = computeExperienceAvailability(slot, bookedMap);
+      const startMs = toDateSafe(extractExperienceStart(slot))?.getTime() || 0;
+      const bookable =
+        startMs > now &&
+        slot.isActive !== false &&
+        isExperiencePublished(slot) &&
+        !isExperienceCancelled(slot) &&
+        !slot.soldOut &&
+        stats.availableSpots > 0;
+      return { ...slot, ...stats, bookable };
+    });
+    const upcomingSlots = slotStats.filter((slot) => {
+      const startMs = toDateSafe(extractExperienceStart(slot))?.getTime() || 0;
+      return startMs > now;
+    });
+    const bookableSlots = upcomingSlots.filter((slot) => slot.bookable);
+
+    return res.json({
+      ...exp.toObject(),
+      ...expStats,
+      isSeries: !!exp.scheduleGroupId,
+      seriesId: exp.scheduleGroupId || null,
+      seriesSlotsCount: slotStats.length,
+      seriesAvailableSlots: bookableSlots.length,
+      seriesNextStartsAt: extractExperienceStart(upcomingSlots[0]) || null,
+      seriesFirstStartsAt: extractExperienceStart(slotStats[0]) || null,
+      seriesLastEndsAt: extractExperienceEnd(slotStats[slotStats.length - 1]) || null,
+    });
   } catch (err) {
     console.error("Get experience error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const getExperienceAvailability = async (req, res) => {
+  try {
+    const exp = await Experience.findById(req.params.id).select(
+      "_id host scheduleGroupId title startsAt endsAt startDate endDate status isActive soldOut maxParticipants remainingSpots pricingMode groupPackageSize activityType price currencyCode"
+    );
+    if (!exp) return res.status(404).json({ message: "Experience not found" });
+
+    const hostId = exp.host?.toString?.() || String(exp.host || "");
+    const role = String(req.user?.role || "").toUpperCase();
+    const canViewAllSlots = !!req.user?.id && (req.user.id === hostId || role === "ADMIN" || role === "OWNER_ADMIN");
+    const includePast = String(req.query.includePast || "") === "1" || String(req.query.includePast || "") === "true";
+
+    let slots = [exp];
+    if (exp.scheduleGroupId) {
+      slots = await Experience.find({
+        host: exp.host,
+        scheduleGroupId: exp.scheduleGroupId,
+        status: { $nin: ["DISABLED"] },
+      })
+        .select(
+          "_id host scheduleGroupId title startsAt endsAt startDate endDate status isActive soldOut maxParticipants remainingSpots pricingMode groupPackageSize activityType price currencyCode city country address"
+        )
+        .sort({ startsAt: 1, createdAt: 1 });
+      if (!slots.length) slots = [exp];
+    }
+
+    const now = Date.now();
+    const bookedMap = await buildBookedMap(slots.map((slot) => slot._id));
+    const mapped = slots
+      .map((slotDoc) => {
+        const slot = typeof slotDoc.toObject === "function" ? slotDoc.toObject() : { ...slotDoc };
+        const stats = computeExperienceAvailability(slot, bookedMap);
+        const startMs = toDateSafe(extractExperienceStart(slot))?.getTime() || 0;
+        const isPublished = isExperiencePublished(slot);
+        const isCancelled = isExperienceCancelled(slot);
+        const visible = canViewAllSlots ? true : slot.isActive !== false && isPublished && !isCancelled;
+        const bookable = visible && startMs > now && !slot.soldOut && stats.availableSpots > 0;
+        return {
+          ...slot,
+          ...stats,
+          startMs,
+          visible,
+          bookable,
+        };
+      })
+      .filter((slot) => slot.visible)
+      .filter((slot) => includePast || slot.startMs > now)
+      .map((slot) => {
+        const { startMs, visible, ...rest } = slot;
+        return rest;
+      });
+
+    return res.json({
+      experienceId: exp._id,
+      isSeries: !!exp.scheduleGroupId,
+      seriesId: exp.scheduleGroupId || null,
+      pricingMode: exp.pricingMode || "PER_PERSON",
+      groupPackageSize: exp.groupPackageSize || null,
+      slots: mapped,
+    });
+  } catch (err) {
+    console.error("Get experience availability error", err);
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -771,17 +1037,20 @@ const getExperiencesMap = async (req, res) => {
       latitude: { $nin: [null, 0] },
       longitude: { $nin: [null, 0] },
     })
-      .select("title shortDescription description category price latitude longitude activityType remainingSpots host")
+      .select(
+        "title shortDescription description category price pricingMode groupPackageSize latitude longitude activityType remainingSpots maxParticipants soldOut startsAt startDate endsAt endDate scheduleGroupId host"
+      )
       .populate("host", "profilePhoto avatar hostProfile.avatar");
 
-    const mapped = exps.map((exp) => {
-      const obj = exp.toObject();
-      const host = obj.host || {};
+    const bookedMap = await buildBookedMap(exps.map((exp) => exp._id));
+    const grouped = aggregateExperiencesBySeries({ experiences: exps, bookedMap });
+    const mapped = grouped.map((exp) => {
+      const host = exp.host || {};
       const profileImage =
         [host.profilePhoto, host.avatar, host.hostProfile?.avatar].find(
           (value) => typeof value === "string" && /^https?:\/\//i.test(value)
         ) || "";
-      return { ...obj, host: { ...host, profileImage } };
+      return { ...exp, host: { ...host, profileImage } };
     });
 
     return res.json(mapped);
@@ -800,6 +1069,7 @@ module.exports = {
   deleteExperienceGroup,
   listExperiences,
   getExperienceById,
+  getExperienceAvailability,
   getExperiencesMap,
   cancelExperience,
 };
