@@ -1,6 +1,7 @@
 const { Router } = require("express");
 const {
   createExperience,
+  createRecurringExperiences,
   getMyExperiences,
   updateExperience,
   deleteExperience,
@@ -15,6 +16,7 @@ const router = Router();
 
 // Host actions
 router.post("/", authenticate, authorize(["HOST"]), createExperience);
+router.post("/bulk", authenticate, authorize(["HOST"]), createRecurringExperiences);
 router.get("/me", authenticate, authorize(["HOST"]), getMyExperiences);
 router.patch("/:id", authenticate, authorize(["HOST"]), updateExperience);
 router.delete("/:id", authenticate, authorize(["HOST"]), deleteExperience);

@@ -17,6 +17,8 @@ const {
 const { deleteCloudinaryUrls, getCloudinaryInfo, getTargetKey } = require("../utils/cloudinary-media");
 const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 
+const MAX_RECURRING_OCCURRENCES = 240;
+
 const validateSchedule = (payload) => {
   if (!payload.startsAt) {
     return "startsAt is required";
@@ -97,6 +99,82 @@ const getExperienceMediaTargets = (exp) => {
   return buildMediaTargetsFromUrls(collectExperienceMediaUrls(exp));
 };
 
+const normalizeCountryCode = (val) => {
+  if (!val) return "";
+  const noAccent = val.toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const up = noAccent.trim().toUpperCase();
+  if (up.includes("ROMANIA") || up === "RO") return "RO";
+  return up;
+};
+
+const prepareExperiencePayload = (inputPayload) => {
+  const payload = { ...inputPayload };
+  const codeRaw =
+    payload.countryCode || payload.country || payload.location?.countryCode || payload.location?.country || "";
+  const normalizedCode = normalizeCountryCode(codeRaw) || "RO";
+  payload.countryCode = normalizedCode;
+  if (!payload.country || normalizeCountryCode(payload.country) === "RO") {
+    payload.country = "Romania";
+  }
+  if (payload.countryCode !== "RO") {
+    return {
+      error:
+        "În acest moment poți publica experiențe doar în România. / At the moment, experiences can be published only in Romania.",
+      status: 400,
+    };
+  }
+
+  if (payload.shortDescription && payload.shortDescription.length > 50) {
+    return {
+      error: "Short description must be at most 50 characters / Descrierea scurtă poate avea maxim 50 de caractere",
+      status: 400,
+    };
+  }
+
+  const scheduleError = validateSchedule(payload);
+  if (scheduleError) return { error: scheduleError, status: 400 };
+
+  if (!payload.activityType) payload.activityType = "INDIVIDUAL";
+  if (payload.activityType === "INDIVIDUAL") {
+    payload.maxParticipants = 1;
+    payload.remainingSpots = 1;
+  } else if (payload.activityType === "GROUP") {
+    const max = Number(payload.maxParticipants) || 1;
+    payload.maxParticipants = max;
+    payload.remainingSpots = max;
+  }
+
+  payload.currencyCode = "RON";
+  if (!payload.status) payload.status = "published";
+
+  if (!payload.description && payload.longDescription) {
+    payload.description = payload.longDescription;
+  }
+
+  if (!payload.address) {
+    if (payload.location?.formattedAddress) {
+      payload.address = payload.location.formattedAddress;
+    } else {
+      const addressParts = [payload.street, payload.streetNumber, payload.city, payload.country].filter(Boolean);
+      payload.address = addressParts.join(", ");
+    }
+  }
+
+  if (payload.locationLat) payload.latitude = payload.locationLat;
+  if (payload.locationLng) payload.longitude = payload.locationLng;
+  if (payload.location?.lat) payload.latitude = payload.location.lat;
+  if (payload.location?.lng) payload.longitude = payload.location.lng;
+
+  if (payload.images?.length && !payload.mainImageUrl) {
+    payload.mainImageUrl = payload.images[0];
+  }
+  payload.mediaRefs = buildMediaTargetsFromUrls(collectExperienceMediaUrls(payload));
+
+  if (!payload.languages) payload.languages = [];
+
+  return { payload };
+};
+
 const createExperience = async (req, res) => {
   try {
     const currentUser = await User.findById(req.user.id);
@@ -106,82 +184,89 @@ const createExperience = async (req, res) => {
         .status(403)
         .json({ message: "Pentru a crea experiențe, trebuie să îți conectezi și activezi portofelul Stripe." });
     }
-    const payload = { ...req.body, host: req.user.id };
-    // normalize country code
-    const normalizeCode = (val) => {
-      if (!val) return "";
-      const noAccent = val.toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-      const up = noAccent.trim().toUpperCase();
-      if (up.includes("ROMANIA") || up === "RO") return "RO";
-      return up;
-    };
-    const codeRaw =
-      payload.countryCode || payload.country || payload.location?.countryCode || payload.location?.country || "";
-    const normalizedCode = normalizeCode(codeRaw) || "RO";
-    payload.countryCode = normalizedCode;
-    if (!payload.country || normalizeCode(payload.country) === "RO") {
-      payload.country = "Romania";
-    }
-    if (payload.countryCode !== "RO") {
-      return res
-        .status(400)
-        .json({
-          message:
-            "În acest moment poți publica experiențe doar în România. / At the moment, experiences can be published only in Romania.",
-        });
-    }
-
-    if (payload.shortDescription && payload.shortDescription.length > 50) {
-      return res
-        .status(400)
-        .json({ message: "Short description must be at most 50 characters / Descrierea scurtă poate avea maxim 50 de caractere" });
-    }
-    const scheduleError = validateSchedule(payload);
-    if (scheduleError) return res.status(400).json({ message: scheduleError });
-
-    // Defaults for activity type and capacity
-    if (!payload.activityType) payload.activityType = "INDIVIDUAL";
-    if (payload.activityType === "INDIVIDUAL") {
-      payload.maxParticipants = 1;
-      payload.remainingSpots = 1;
-    } else if (payload.activityType === "GROUP") {
-      const max = Number(payload.maxParticipants) || 1;
-      payload.maxParticipants = max;
-      payload.remainingSpots = max;
-    }
-
-    payload.currencyCode = "RON";
-    if (!payload.status) payload.status = "published";
-
-    if (!payload.description && payload.longDescription) {
-      payload.description = payload.longDescription;
-    }
-
-    if (!payload.address) {
-      if (payload.location?.formattedAddress) {
-        payload.address = payload.location.formattedAddress;
-      } else {
-        const addressParts = [payload.street, payload.streetNumber, payload.city, payload.country].filter(Boolean);
-        payload.address = addressParts.join(", ");
-      }
-    }
-
-    if (payload.locationLat) payload.latitude = payload.locationLat;
-    if (payload.locationLng) payload.longitude = payload.locationLng;
-    if (payload.location?.lat) payload.latitude = payload.location.lat;
-    if (payload.location?.lng) payload.longitude = payload.location.lng;
-
-    if (payload.images?.length && !payload.mainImageUrl) {
-      payload.mainImageUrl = payload.images[0];
-    }
-    payload.mediaRefs = buildMediaTargetsFromUrls(collectExperienceMediaUrls(payload));
-
-    if (!payload.languages) payload.languages = [];
-
-    const exp = await Experience.create(payload);
+    const prepared = prepareExperiencePayload({ ...req.body, host: req.user.id });
+    if (prepared.error) return res.status(prepared.status || 400).json({ message: prepared.error });
+    const exp = await Experience.create(prepared.payload);
     return res.status(201).json(exp);
   } catch (err) {
     console.error("Create experience error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const createRecurringExperiences = async (req, res) => {
+  try {
+    const currentUser = await User.findById(req.user.id);
+    if (currentUser?.isBanned) return res.status(403).json({ message: "Host banned" });
+    if (!currentUser?.stripeAccountId) {
+      return res
+        .status(403)
+        .json({ message: "Pentru a crea experiențe, trebuie să îți conectezi și activezi portofelul Stripe." });
+    }
+
+    const { occurrences, ...basePayload } = req.body || {};
+    if (!Array.isArray(occurrences) || occurrences.length === 0) {
+      return res.status(400).json({ message: "occurrences is required and must be a non-empty array" });
+    }
+    if (occurrences.length > MAX_RECURRING_OCCURRENCES) {
+      return res
+        .status(400)
+        .json({
+          message: `Poți crea maximum ${MAX_RECURRING_OCCURRENCES} sloturi dintr-o singură acțiune.`,
+        });
+    }
+
+    const normalizedOccurrences = [];
+    const seenStarts = new Set();
+    for (let index = 0; index < occurrences.length; index += 1) {
+      const occurrence = occurrences[index] || {};
+      const startsAt = occurrence.startsAt;
+      const endsAt = occurrence.endsAt;
+      if (!startsAt || !endsAt) {
+        return res.status(400).json({ message: `Occurrence ${index + 1} must include startsAt and endsAt` });
+      }
+      const startsMs = new Date(startsAt).getTime();
+      if (!Number.isFinite(startsMs)) {
+        return res.status(400).json({ message: `Occurrence ${index + 1} has invalid startsAt` });
+      }
+      if (seenStarts.has(startsMs)) {
+        return res.status(400).json({ message: `Occurrence ${index + 1} duplicates an existing slot` });
+      }
+      seenStarts.add(startsMs);
+      normalizedOccurrences.push({
+        startsAt,
+        endsAt,
+        durationMinutes: occurrence.durationMinutes,
+      });
+    }
+
+    const groupId = new mongoose.Types.ObjectId().toString();
+    const docs = [];
+    for (let index = 0; index < normalizedOccurrences.length; index += 1) {
+      const occurrence = normalizedOccurrences[index];
+      const prepared = prepareExperiencePayload({
+        ...basePayload,
+        host: req.user.id,
+        startsAt: occurrence.startsAt,
+        endsAt: occurrence.endsAt,
+        durationMinutes: occurrence.durationMinutes || basePayload.durationMinutes,
+        scheduleType: "LONG_TERM",
+        scheduleGroupId: groupId,
+      });
+      if (prepared.error) {
+        return res.status(prepared.status || 400).json({ message: `Occurrence ${index + 1}: ${prepared.error}` });
+      }
+      docs.push(prepared.payload);
+    }
+
+    const created = await Experience.insertMany(docs, { ordered: true });
+    return res.status(201).json({
+      createdCount: created.length,
+      scheduleGroupId: groupId,
+      experiences: created,
+    });
+  } catch (err) {
+    console.error("Create recurring experiences error", err);
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -648,6 +733,7 @@ const getExperiencesMap = async (req, res) => {
 
 module.exports = {
   createExperience,
+  createRecurringExperiences,
   getMyExperiences,
   updateExperience,
   deleteExperience,

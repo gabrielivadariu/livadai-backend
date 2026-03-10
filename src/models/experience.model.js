@@ -19,6 +19,8 @@ const experienceSchema = new mongoose.Schema(
       enum: ["draft", "published", "cancelled", "CANCELLED", "DISABLED", "NO_BOOKINGS", "ARCHIVED"],
       default: "published",
     },
+    scheduleType: { type: String, enum: ["ONE_TIME", "LONG_TERM"], default: "ONE_TIME" },
+    scheduleGroupId: { type: String, default: null, index: true },
     environment: { type: String, enum: ["INDOOR", "OUTDOOR", "BOTH"], default: "OUTDOOR" },
     // Schedule (new)
     startsAt: { type: Date, required: true },
