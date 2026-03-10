@@ -20,6 +20,28 @@ const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 const MAX_RECURRING_OCCURRENCES = 240;
 const BOOKING_STATUSES_COUNTED = ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"];
 
+const formatDateKey = (dateValue) => {
+  const date = toDateSafe(dateValue);
+  if (!date) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const normalizeExcludedDates = (values) => {
+  if (!Array.isArray(values)) return [];
+  const unique = new Set();
+  for (const value of values) {
+    const raw = String(value || "").trim();
+    if (!raw) continue;
+    const parsed = new Date(`${raw}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) continue;
+    unique.add(formatDateKey(parsed));
+  }
+  return Array.from(unique).sort();
+};
+
 const toDateSafe = (value) => {
   if (!value) return null;
   const parsed = new Date(value);
@@ -321,7 +343,7 @@ const createRecurringExperiences = async (req, res) => {
         .json({ message: "Pentru a crea experiențe, trebuie să îți conectezi și activezi portofelul Stripe." });
     }
 
-    const { occurrences, ...basePayload } = req.body || {};
+    const { occurrences, recurrenceExcludedDates, ...basePayload } = req.body || {};
     if (!Array.isArray(occurrences) || occurrences.length === 0) {
       return res.status(400).json({ message: "occurrences is required and must be a non-empty array" });
     }
@@ -333,6 +355,8 @@ const createRecurringExperiences = async (req, res) => {
         });
     }
 
+    const excludedDateList = normalizeExcludedDates(recurrenceExcludedDates);
+    const excludedDateSet = new Set(excludedDateList);
     const normalizedOccurrences = [];
     const seenStarts = new Set();
     for (let index = 0; index < occurrences.length; index += 1) {
@@ -350,10 +374,19 @@ const createRecurringExperiences = async (req, res) => {
         return res.status(400).json({ message: `Occurrence ${index + 1} duplicates an existing slot` });
       }
       seenStarts.add(startsMs);
-      normalizedOccurrences.push({
-        startsAt,
-        endsAt,
-        durationMinutes: occurrence.durationMinutes,
+      const startDateKey = formatDateKey(startsAt);
+      if (!excludedDateSet.has(startDateKey)) {
+        normalizedOccurrences.push({
+          startsAt,
+          endsAt,
+          durationMinutes: occurrence.durationMinutes,
+        });
+      }
+    }
+
+    if (!normalizedOccurrences.length) {
+      return res.status(400).json({
+        message: "Nu există sloturi valabile după aplicarea zilelor indisponibile.",
       });
     }
 
@@ -369,6 +402,7 @@ const createRecurringExperiences = async (req, res) => {
         durationMinutes: occurrence.durationMinutes || basePayload.durationMinutes,
         scheduleType: "LONG_TERM",
         scheduleGroupId: groupId,
+        recurrenceExcludedDates: excludedDateList,
       });
       if (prepared.error) {
         return res.status(prepared.status || 400).json({ message: `Occurrence ${index + 1}: ${prepared.error}` });
@@ -380,6 +414,7 @@ const createRecurringExperiences = async (req, res) => {
     return res.status(201).json({
       createdCount: created.length,
       scheduleGroupId: groupId,
+      recurrenceExcludedDates: excludedDateList,
       experiences: created,
     });
   } catch (err) {

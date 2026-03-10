@@ -23,6 +23,7 @@ const experienceSchema = new mongoose.Schema(
     },
     scheduleType: { type: String, enum: ["ONE_TIME", "LONG_TERM"], default: "ONE_TIME" },
     scheduleGroupId: { type: String, default: null, index: true },
+    recurrenceExcludedDates: { type: [String], default: [] },
     environment: { type: String, enum: ["INDOOR", "OUTDOOR", "BOTH"], default: "OUTDOOR" },
     // Schedule (new)
     startsAt: { type: Date, required: true },
