@@ -5,6 +5,7 @@ const {
   getMyExperiences,
   updateExperience,
   deleteExperience,
+  deleteExperienceGroup,
   listExperiences,
   getExperienceById,
   getExperiencesMap,
@@ -18,6 +19,7 @@ const router = Router();
 router.post("/", authenticate, authorize(["HOST"]), createExperience);
 router.post("/bulk", authenticate, authorize(["HOST"]), createRecurringExperiences);
 router.get("/me", authenticate, authorize(["HOST"]), getMyExperiences);
+router.delete("/group/:groupId", authenticate, authorize(["HOST"]), deleteExperienceGroup);
 router.patch("/:id", authenticate, authorize(["HOST"]), updateExperience);
 router.delete("/:id", authenticate, authorize(["HOST"]), deleteExperience);
 router.post("/:id/cancel", authenticate, authorize(["HOST"]), cancelExperience);

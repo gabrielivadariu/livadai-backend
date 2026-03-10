@@ -417,6 +417,66 @@ const deleteExperience = async (req, res) => {
   }
 };
 
+const deleteExperienceGroup = async (req, res) => {
+  try {
+    const groupId = String(req.params.groupId || "").trim();
+    if (!groupId) {
+      return res.status(400).json({ message: "groupId is required" });
+    }
+    const currentUser = await User.findById(req.user.id);
+    if (currentUser?.isBanned) return res.status(403).json({ message: "Host banned" });
+
+    const experiences = await Experience.find({
+      host: req.user.id,
+      scheduleGroupId: groupId,
+      status: { $nin: ["DISABLED"] },
+    });
+    if (!experiences.length) {
+      return res.status(404).json({ message: "No experiences found for this series" });
+    }
+
+    let deletedCount = 0;
+    let skippedWithBookings = 0;
+    let deletedMediaCount = 0;
+    for (const exp of experiences) {
+      const hasBookings = await Booking.findOne({ experience: exp._id }).select("_id");
+      if (hasBookings) {
+        skippedWithBookings += 1;
+        continue;
+      }
+      const mediaTargets = getExperienceMediaTargets(exp);
+      await Experience.deleteOne({ _id: exp._id, host: req.user.id });
+      deletedCount += 1;
+      if (mediaTargets.length) {
+        const mediaDeletedForExp = await deleteCloudinaryUrls(mediaTargets, {
+          scope: "experience.group-delete",
+        });
+        deletedMediaCount += mediaDeletedForExp;
+        await logMediaDeletion({
+          scope: "experience.group-delete",
+          requestedCount: mediaTargets.length,
+          deletedCount: mediaDeletedForExp,
+          entityType: "experience",
+          entityId: exp._id,
+          reason: "group-delete-without-bookings",
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      groupId,
+      total: experiences.length,
+      deletedCount,
+      skippedWithBookings,
+      deletedMediaCount,
+    });
+  } catch (err) {
+    console.error("Delete experience group error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
 const cancelExperience = async (req, res) => {
   try {
     const exp = await Experience.findOne({ _id: req.params.id, host: req.user.id });
@@ -737,6 +797,7 @@ module.exports = {
   getMyExperiences,
   updateExperience,
   deleteExperience,
+  deleteExperienceGroup,
   listExperiences,
   getExperienceById,
   getExperiencesMap,
