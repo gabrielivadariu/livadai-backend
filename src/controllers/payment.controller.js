@@ -89,17 +89,34 @@ const createCheckout = async (req, res) => {
     const amount = unitAmount * checkoutQuantity;
     if (amount <= 0) return res.status(400).json({ message: "Invalid price" });
 
-    const booking = await Booking.create({
+    let booking = await Booking.findOne({
       experience: exp._id,
       explorer: req.user.id,
       host: exp.host,
-      quantity: seatQty,
-      amount: amount,
-      currency: baseCurrency,
-      depositAmount: 0,
-      depositCurrency: undefined,
       status: "PENDING",
-    });
+    }).sort({ updatedAt: -1, createdAt: -1 });
+
+    if (booking) {
+      booking.quantity = seatQty;
+      booking.amount = amount;
+      booking.currency = baseCurrency;
+      booking.depositAmount = 0;
+      booking.depositCurrency = undefined;
+      booking.status = "PENDING";
+      await booking.save();
+    } else {
+      booking = await Booking.create({
+        experience: exp._id,
+        explorer: req.user.id,
+        host: exp.host,
+        quantity: seatQty,
+        amount: amount,
+        currency: baseCurrency,
+        depositAmount: 0,
+        depositCurrency: undefined,
+        status: "PENDING",
+      });
+    }
 
     const baseUrl = process.env.FRONTEND_URL || process.env.APP_URL || "https://app.livadai.com";
     const appScheme = process.env.APP_DEEP_LINK_SCHEME || "livadaiapp";
@@ -186,6 +203,43 @@ const handlePaymentSuccess = async ({ bookingId, paymentIntentId, sessionId, isD
   if (!alreadyPaid) {
     booking.status = isDeposit ? "DEPOSIT_PAID" : "PAID";
     await booking.save();
+  }
+
+  try {
+    const siblingPendingBookings = await Booking.find({
+      _id: { $ne: booking._id },
+      experience: booking.experience,
+      explorer: booking.explorer,
+      host: booking.host,
+      status: { $in: ["PENDING", "CONFIRMED"] },
+    }).select("_id");
+
+    if (siblingPendingBookings.length) {
+      const siblingIds = siblingPendingBookings.map((row) => row._id);
+      const confirmedSiblingPayments = await Payment.find({
+        booking: { $in: siblingIds },
+        status: "CONFIRMED",
+      }).select("booking");
+
+      const protectedBookingIds = new Set(
+        confirmedSiblingPayments.map((payment) => String(payment.booking?.toString?.() || payment.booking))
+      );
+
+      const cancellableIds = siblingIds.filter((id) => !protectedBookingIds.has(String(id)));
+      if (cancellableIds.length) {
+        await Booking.updateMany(
+          { _id: { $in: cancellableIds } },
+          {
+            $set: {
+              status: "CANCELLED",
+              cancelledAt: new Date(),
+            },
+          }
+        );
+      }
+    }
+  } catch (err) {
+    console.error("Booking sibling cleanup error", err?.message || err);
   }
 
   // Update payment record

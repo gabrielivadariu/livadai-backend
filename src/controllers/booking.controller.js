@@ -22,6 +22,102 @@ const reviewEligibleStatuses = new Set([
   "PENDING_ATTENDANCE",
   "CONFIRMED",
 ]);
+const pendingBookingStatuses = new Set(["PENDING", "CONFIRMED"]);
+
+const getBookingExplorerExperienceKey = (booking) => {
+  const explorerId = booking?.explorer?._id?.toString?.() || booking?.explorer?.toString?.() || "";
+  const experienceId = booking?.experience?._id?.toString?.() || booking?.experience?.toString?.() || "";
+  if (!explorerId || !experienceId) return "";
+  return `${explorerId}::${experienceId}`;
+};
+
+const selectNewestBooking = (bookings = []) =>
+  bookings
+    .slice()
+    .sort((a, b) => {
+      const aTime = new Date(a?.updatedAt || a?.createdAt || 0).getTime() || 0;
+      const bTime = new Date(b?.updatedAt || b?.createdAt || 0).getTime() || 0;
+      return bTime - aTime;
+    })[0] || null;
+
+const dedupeBookingSnapshots = (bookings = []) => {
+  const groups = new Map();
+  bookings.forEach((booking) => {
+    const key = getBookingExplorerExperienceKey(booking);
+    if (!key) return;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(booking);
+  });
+
+  const keepIds = new Set();
+  bookings.forEach((booking) => {
+    const key = getBookingExplorerExperienceKey(booking);
+    if (!key) keepIds.add(String(booking._id));
+  });
+
+  groups.forEach((group) => {
+    const nonPending = group.filter((booking) => !pendingBookingStatuses.has(String(booking?.status || "")));
+    if (nonPending.length) {
+      nonPending.forEach((booking) => keepIds.add(String(booking._id)));
+      return;
+    }
+    const newestPending = selectNewestBooking(group);
+    if (newestPending?._id) keepIds.add(String(newestPending._id));
+  });
+
+  return bookings.filter((booking) => keepIds.has(String(booking._id)));
+};
+
+const hydrateBookingsWithPaymentState = async (bookings = []) => {
+  const bookingIds = bookings.map((booking) => booking?._id).filter(Boolean);
+  let confirmedPayments = [];
+  if (bookingIds.length) {
+    try {
+      confirmedPayments = await Payment.find({ booking: { $in: bookingIds }, status: "CONFIRMED" }).select("booking paymentType");
+    } catch (_err) {
+      confirmedPayments = [];
+    }
+  }
+
+  const paymentMap = new Map();
+  confirmedPayments.forEach((payment) => {
+    const id = payment.booking?.toString?.() || payment.booking;
+    if (id) paymentMap.set(String(id), payment.paymentType || "PAID_BOOKING");
+  });
+
+  const pendingUpdates = [];
+  const normalized = bookings.map((booking) => {
+    const obj = booking?.toObject ? booking.toObject() : { ...booking };
+    const paymentType = paymentMap.get(String(booking._id));
+    let effectiveStatus = obj.status;
+    if (paymentType && pendingBookingStatuses.has(String(obj.status || ""))) {
+      effectiveStatus = paymentType === "DEPOSIT" ? "DEPOSIT_PAID" : "PAID";
+      pendingUpdates.push({ bookingId: booking._id, currentStatus: booking.status, status: effectiveStatus });
+    }
+    return {
+      ...obj,
+      status: effectiveStatus,
+      paymentConfirmed: !!paymentType,
+    };
+  });
+
+  if (pendingUpdates.length) {
+    try {
+      await Booking.bulkWrite(
+        pendingUpdates.map((item) => ({
+          updateOne: {
+            filter: { _id: item.bookingId, status: item.currentStatus },
+            update: { $set: { status: item.status } },
+          },
+        }))
+      );
+    } catch (_err) {
+      // ignore background status repair failures
+    }
+  }
+
+  return dedupeBookingSnapshots(normalized);
+};
 
 const getExperienceEndDate = (exp) => {
   if (!exp) return null;
@@ -126,61 +222,26 @@ const getMyBookings = async (req, res) => {
         "title price currencyCode startDate endDate startsAt endsAt durationMinutes startTime endTime activityType remainingSpots maxParticipants soldOut host address"
       )
       .populate("host", "name");
-    const bookingIds = bookings.map((b) => b._id);
-    let confirmedPayments = [];
-    if (bookingIds.length) {
-      try {
-        confirmedPayments = await Payment.find({ booking: { $in: bookingIds }, status: "CONFIRMED" }).select("booking paymentType");
-      } catch (_e) {
-        confirmedPayments = [];
-      }
-    }
-    const paymentMap = new Map();
-    confirmedPayments.forEach((p) => {
-      const id = p.booking?.toString?.() || p.booking;
-      if (id) paymentMap.set(id, p.paymentType || "PAID_BOOKING");
-    });
-    const pendingUpdates = [];
+    const hydratedBookings = await hydrateBookingsWithPaymentState(bookings);
+    const bookingIds = hydratedBookings.map((b) => b._id);
     const existingReviews = await Review.find({ booking: { $in: bookingIds } }).select("booking user");
     const reviewedMap = new Set(existingReviews.map((r) => `${r.booking.toString()}::${r.user.toString()}`));
     const now = new Date();
-    const data = bookings.map((b) => {
+    const data = hydratedBookings.map((b) => {
       const exp = b.experience;
       const endDate = getExperienceEndDate(exp);
-      const payType = paymentMap.get(b._id.toString());
-      let effectiveStatus = b.status;
-      if (payType && ["PENDING", "CONFIRMED"].includes(String(b.status || ""))) {
-        effectiveStatus = payType === "DEPOSIT" ? "DEPOSIT_PAID" : "PAID";
-        pendingUpdates.push({ bookingId: b._id, currentStatus: b.status, status: effectiveStatus });
-      }
       const eligible =
-        reviewEligibleStatuses.has(String(effectiveStatus || "")) &&
+        reviewEligibleStatuses.has(String(b.status || "")) &&
         endDate &&
         !Number.isNaN(endDate.getTime()) &&
         now > endDate;
       const reviewKey = `${b._id.toString()}::${req.user.id}`;
       return {
-        ...b.toObject(),
-        status: effectiveStatus,
-        paymentConfirmed: !!payType,
+        ...b,
         reviewEligible: !!eligible && !reviewedMap.has(reviewKey),
         reviewExists: reviewedMap.has(reviewKey),
       };
     });
-    if (pendingUpdates.length) {
-      try {
-        await Booking.bulkWrite(
-          pendingUpdates.map((u) => ({
-            updateOne: {
-              filter: { _id: u.bookingId, status: u.currentStatus },
-              update: { $set: { status: u.status } },
-            },
-          }))
-        );
-      } catch (_e) {
-        // ignore
-      }
-    }
     return res.json(data);
   } catch (err) {
     console.error("Get my bookings error", err);
@@ -193,7 +254,8 @@ const getHostBookings = async (req, res) => {
     const bookings = await Booking.find({ host: req.user.id })
       .populate("experience", "title price startsAt endsAt startDate endDate activityType remainingSpots maxParticipants")
       .populate("explorer", "name email");
-    return res.json(bookings);
+    const data = await hydrateBookingsWithPaymentState(bookings);
+    return res.json(data);
   } catch (err) {
     console.error("Get host bookings error", err);
     return res.status(500).json({ message: "Server error" });
@@ -206,7 +268,8 @@ const getHostBookingsByExperience = async (req, res) => {
     const bookings = await Booking.find({ host: req.user.id, experience: experienceId })
       .populate("experience", "title price startsAt endsAt startDate endDate activityType remainingSpots maxParticipants")
       .populate("explorer", "name email displayName profilePhoto avatar phone");
-    return res.json(bookings);
+    const data = await hydrateBookingsWithPaymentState(bookings);
+    return res.json(data);
   } catch (err) {
     console.error("Get host bookings by experience error", err);
     return res.status(500).json({ message: "Server error" });
