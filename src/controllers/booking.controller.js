@@ -23,20 +23,67 @@ const reviewEligibleStatuses = new Set([
   "CONFIRMED",
 ]);
 const pendingBookingStatuses = new Set(["PENDING", "CONFIRMED"]);
+const bookingStatusPriority = {
+  DISPUTE_WON: 120,
+  DISPUTED: 115,
+  DISPUTE_LOST: 110,
+  REFUNDED: 105,
+  REFUND_FAILED: 100,
+  COMPLETED: 95,
+  AUTO_COMPLETED: 90,
+  NO_SHOW: 85,
+  PENDING_ATTENDANCE: 80,
+  PAID: 70,
+  DEPOSIT_PAID: 65,
+  CANCELLED: 60,
+  CONFIRMED: 20,
+  PENDING: 10,
+};
+
+const toTimestamp = (value) => {
+  if (!value) return 0;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+};
 
 const getBookingExplorerExperienceKey = (booking) => {
-  const explorerId = booking?.explorer?._id?.toString?.() || booking?.explorer?.toString?.() || "";
-  const experienceId = booking?.experience?._id?.toString?.() || booking?.experience?.toString?.() || "";
+  const explorerId =
+    booking?.explorer?._id?.toString?.() ||
+    booking?.explorer?.id?.toString?.() ||
+    (typeof booking?.explorer === "string" ? booking.explorer : "") ||
+    booking?.explorer?.email ||
+    booking?.explorer?.phone ||
+    booking?.explorer?.displayName ||
+    booking?.explorer?.name ||
+    "";
+  const experienceId =
+    booking?.experience?._id?.toString?.() ||
+    booking?.experience?.id?.toString?.() ||
+    (typeof booking?.experience === "string" ? booking.experience : "") ||
+    [
+      booking?.experience?.title,
+      booking?.experience?.startsAt || booking?.experience?.startDate || booking?.date,
+      booking?.timeSlot,
+    ]
+      .filter(Boolean)
+      .join("::");
   if (!explorerId || !experienceId) return "";
   return `${explorerId}::${experienceId}`;
 };
 
-const selectNewestBooking = (bookings = []) =>
+const selectPreferredBooking = (bookings = []) =>
   bookings
     .slice()
     .sort((a, b) => {
-      const aTime = new Date(a?.updatedAt || a?.createdAt || 0).getTime() || 0;
-      const bTime = new Date(b?.updatedAt || b?.createdAt || 0).getTime() || 0;
+      const aPending = pendingBookingStatuses.has(String(a?.status || ""));
+      const bPending = pendingBookingStatuses.has(String(b?.status || ""));
+      if (aPending !== bPending) return aPending ? 1 : -1;
+      const aTime = toTimestamp(a?.updatedAt) || toTimestamp(a?.createdAt);
+      const bTime = toTimestamp(b?.updatedAt) || toTimestamp(b?.createdAt);
+      if (aTime !== bTime) return bTime - aTime;
+      const aPriority = bookingStatusPriority[String(a?.status || "")] || 0;
+      const bPriority = bookingStatusPriority[String(b?.status || "")] || 0;
+      if (aPriority !== bPriority) return bPriority - aPriority;
       return bTime - aTime;
     })[0] || null;
 
@@ -56,13 +103,8 @@ const dedupeBookingSnapshots = (bookings = []) => {
   });
 
   groups.forEach((group) => {
-    const nonPending = group.filter((booking) => !pendingBookingStatuses.has(String(booking?.status || "")));
-    if (nonPending.length) {
-      nonPending.forEach((booking) => keepIds.add(String(booking._id)));
-      return;
-    }
-    const newestPending = selectNewestBooking(group);
-    if (newestPending?._id) keepIds.add(String(newestPending._id));
+    const preferredBooking = selectPreferredBooking(group);
+    if (preferredBooking?._id) keepIds.add(String(preferredBooking._id));
   });
 
   return bookings.filter((booking) => keepIds.has(String(booking._id)));
