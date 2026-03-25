@@ -62,6 +62,38 @@ const clearLoginAttempts = (key) => {
   loginAttempts.delete(key);
 };
 
+const digitsOnly = (value) => String(value || "").replace(/\D/g, "");
+
+const normalizePhoneCountryCode = (value) => {
+  const digits = digitsOnly(value);
+  if (!digits || digits.length > 4) return "";
+  return `+${digits}`;
+};
+
+const normalizePhoneNumber = (value, phoneCountryCode) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  let digits = digitsOnly(raw);
+  if (!digits) return "";
+
+  const countryCodeDigits = digitsOnly(phoneCountryCode);
+  if (raw.startsWith("+") && countryCodeDigits && digits.startsWith(countryCodeDigits)) {
+    digits = digits.slice(countryCodeDigits.length);
+  } else if (raw.startsWith("+")) {
+    return "";
+  } else if (digits.startsWith("00")) {
+    const internationalDigits = digits.slice(2);
+    if (countryCodeDigits && internationalDigits.startsWith(countryCodeDigits)) {
+      digits = internationalDigits.slice(countryCodeDigits.length);
+    } else {
+      return "";
+    }
+  }
+
+  return digits.replace(/^0+/, "");
+};
+
 const signToken = (user) => {
   return jwt.sign(
     {
@@ -103,8 +135,10 @@ const register = async (req, res) => {
     if (password !== confirmPassword) return res.status(400).json({ message: "Passwords do not match" });
     const strengthError = validatePasswordStrength(password);
     if (strengthError) return res.status(400).json({ message: strengthError });
-    if (!/^\+?\d{1,4}$/.test(phoneCountryCode)) return res.status(400).json({ message: "Invalid country code" });
-    if (!/^\d{6,15}$/.test(String(phone))) return res.status(400).json({ message: "Invalid phone number" });
+    const normalizedPhoneCountryCode = normalizePhoneCountryCode(phoneCountryCode);
+    const normalizedPhone = normalizePhoneNumber(phone, normalizedPhoneCountryCode);
+    if (!normalizedPhoneCountryCode) return res.status(400).json({ message: "Invalid country code" });
+    if (!/^\d{6,15}$/.test(normalizedPhone)) return res.status(400).json({ message: "Invalid phone number" });
     if (termsAccepted !== true) return res.status(400).json({ message: "Terms must be accepted" });
     if (!termsVersion) return res.status(400).json({ message: "Terms version required" });
     const acceptedAt = new Date(termsAcceptedAt);
@@ -135,8 +169,8 @@ const register = async (req, res) => {
       password: hashed,
       role: role === "HOST" ? "HOST" : "EXPLORER",
       isHost: role === "HOST",
-      phone,
-      phoneCountryCode,
+      phone: normalizedPhone,
+      phoneCountryCode: normalizedPhoneCountryCode,
       termsAccepted: true,
       termsAcceptedAt: acceptedAt,
       termsVersion,
