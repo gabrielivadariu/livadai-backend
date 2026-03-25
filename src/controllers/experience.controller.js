@@ -314,6 +314,89 @@ const prepareExperiencePayload = (inputPayload) => {
   return { payload };
 };
 
+const EDITABLE_EXPERIENCE_FIELDS = new Set([
+  "title",
+  "shortDescription",
+  "description",
+  "longDescription",
+  "coverImageUrl",
+  "mainImageUrl",
+  "images",
+]);
+
+const normalizeMediaUrl = (value) => {
+  if (typeof value !== "string") return "";
+  return value.trim();
+};
+
+const normalizeMediaUrlList = (value) => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  return value
+    .map((item) => normalizeMediaUrl(item))
+    .filter((item) => {
+      if (!item || seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    });
+};
+
+const buildEditableExperienceUpdate = (input, existingExp) => {
+  const providedKeys = Object.keys(input || {});
+  const blockedKeys = providedKeys.filter((key) => !EDITABLE_EXPERIENCE_FIELDS.has(key));
+  if (blockedKeys.length) {
+    return {
+      error:
+        "După publicare poți edita doar titlul, descrierile și imaginile experienței. / After publishing you can edit only the experience title, descriptions, and images.",
+      status: 400,
+    };
+  }
+
+  const update = {};
+
+  if (input.title !== undefined) {
+    const title = String(input.title || "").trim();
+    if (!title) {
+      return { error: "Title is required / Titlul este obligatoriu", status: 400 };
+    }
+    update.title = title;
+  }
+
+  if (input.shortDescription !== undefined) {
+    const shortDescription = String(input.shortDescription || "").trim();
+    if (shortDescription.length > 50) {
+      return {
+        error: "Short description must be at most 50 characters / Descrierea scurtă poate avea maxim 50 de caractere",
+        status: 400,
+      };
+    }
+    update.shortDescription = shortDescription;
+  }
+
+  if (input.description !== undefined || input.longDescription !== undefined) {
+    update.description = String(input.description ?? input.longDescription ?? "").trim();
+  }
+
+  const normalizedImages = input.images !== undefined ? normalizeMediaUrlList(input.images) : normalizeMediaUrlList(existingExp.images);
+  const normalizedCoverImage =
+    input.coverImageUrl !== undefined ? normalizeMediaUrl(input.coverImageUrl) : normalizeMediaUrl(existingExp.coverImageUrl);
+  const normalizedMainImage =
+    input.mainImageUrl !== undefined ? normalizeMediaUrl(input.mainImageUrl) : normalizeMediaUrl(existingExp.mainImageUrl);
+
+  if (input.images !== undefined) {
+    update.images = normalizedImages;
+  }
+
+  if (input.coverImageUrl !== undefined || input.mainImageUrl !== undefined || input.images !== undefined) {
+    const coverImageUrl = normalizedCoverImage || normalizedImages[0] || "";
+    const mainImageUrl = normalizedMainImage || coverImageUrl || normalizedImages[0] || "";
+    update.coverImageUrl = coverImageUrl;
+    update.mainImageUrl = mainImageUrl;
+  }
+
+  return { update };
+};
+
 const createExperience = async (req, res) => {
   try {
     const currentUser = await User.findById(req.user.id);
@@ -452,113 +535,39 @@ const updateExperience = async (req, res) => {
     if (currentUser?.isBanned) return res.status(403).json({ message: "Host banned" });
     const existingExp = await Experience.findOne({ _id: req.params.id, host: req.user.id });
     if (!existingExp) return res.status(404).json({ message: "Experience not found" });
-    const update = { ...req.body };
-    if (update.country || update.countryCode) {
-      const codeRaw = update.countryCode || update.country;
-      const normalizedCode = codeRaw ? codeRaw.toString().trim().toUpperCase().replace("ROMANIA", "RO") : "RO";
-      if (normalizedCode !== "RO") {
-        return res
-          .status(400)
-          .json({ message: "În acest moment poți publica experiențe doar în România. / At the moment, experiences can be published only in Romania." });
-      }
-      update.countryCode = "RO";
-      if (!update.country || update.country.toUpperCase() === "RO") {
-        update.country = "Romania";
-      }
-    }
-    if (update.country && update.country !== "RO") {
-      return res.status(400).json({ message: "În acest moment poți publica experiențe doar în România. / At the moment, experiences can be published only in Romania." });
-    }
-    if (update.shortDescription && update.shortDescription.length > 50) {
-      return res
-        .status(400)
-        .json({ message: "Short description must be at most 50 characters / Descrierea scurtă poate avea maxim 50 de caractere" });
-    }
-    if (update.currencyCode && update.currencyCode !== "RON") {
-      update.currencyCode = "RON";
-    }
-    if (update.pricingMode !== undefined) {
-      update.pricingMode = String(update.pricingMode || "").toUpperCase() === "PER_GROUP" ? "PER_GROUP" : "PER_PERSON";
-    }
-    if (update.pricingMode === "PER_GROUP") {
-      if (!update.activityType) update.activityType = "GROUP";
-      const nextGroupPackageSize = Math.max(
-        1,
-        Number(update.groupPackageSize) || Number(update.maxParticipants) || Number(existingExp.groupPackageSize) || 1
-      );
-      update.groupPackageSize = nextGroupPackageSize;
-      if (update.activityType === "GROUP") {
-        const nextMax = Math.max(nextGroupPackageSize, Number(update.maxParticipants) || Number(existingExp.maxParticipants) || 1);
-        update.maxParticipants = nextMax;
-      }
-    }
-    if (update.pricingMode === "PER_PERSON") {
-      update.groupPackageSize = null;
-    }
-    if (update.startsAt || update.endsAt || update.durationMinutes) {
-      const schedulePayload = {
-        startsAt: update.startsAt || update.startDate,
-        endsAt: update.endsAt || update.endDate,
-        durationMinutes: update.durationMinutes,
-      };
-      const scheduleError = validateSchedule(schedulePayload);
-      if (scheduleError) return res.status(400).json({ message: scheduleError });
-      update.startsAt = schedulePayload.startsAt;
-      update.endsAt = schedulePayload.endsAt;
-      update.startDate = update.startsAt;
-      update.endDate = update.endsAt;
-      update.startTime = update.startsAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      update.endTime = update.endsAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    }
-    if (!update.status) update.status = "published";
-    if (update.currencyCode && update.currencyCode !== "RON") {
-      update.currencyCode = "RON";
-    }
-    if (update.locationLat) update.latitude = update.locationLat;
-    if (update.locationLng) update.longitude = update.locationLng;
-    // Block price/capacity changes if bookings exist
-    const existingBookings = await Booking.findOne({ experience: req.params.id });
-    if (existingBookings && update.currencyCode && update.currencyCode !== undefined) {
-      return res.status(400).json({ message: "Cannot change currency after bookings exist" });
-    }
-    if (
-      existingBookings &&
-      (update.activityType !== undefined ||
-        update.maxParticipants !== undefined ||
-        update.pricingMode !== undefined ||
-        update.groupPackageSize !== undefined)
-    ) {
-      return res.status(400).json({ message: "Cannot change pricing or participant configuration after bookings exist" });
+    const isSeriesExperience = !!(
+      existingExp.scheduleGroupId ||
+      existingExp.seriesId ||
+      existingExp.isSeries ||
+      String(existingExp.scheduleType || "").toUpperCase() === "LONG_TERM"
+    );
+    if (isSeriesExperience) {
+      return res.status(400).json({
+        message:
+          "Seriile recurente nu pot fi editate din acest ecran. / Recurring series cannot be edited from this screen.",
+      });
     }
 
-    const nextActivityType = update.activityType || existingExp.activityType || "INDIVIDUAL";
-    if (nextActivityType === "INDIVIDUAL") {
-      update.maxParticipants = 1;
-      if (!existingBookings) update.remainingSpots = 1;
-      if (update.pricingMode === "PER_GROUP") {
-        update.activityType = "GROUP";
-      }
-    } else if (nextActivityType === "GROUP") {
-      const max = Math.max(1, Number(update.maxParticipants) || Number(existingExp.maxParticipants) || 1);
-      update.maxParticipants = max;
-      if (!existingBookings) {
-        update.remainingSpots = max;
-      }
+    const startTime = new Date(existingExp.startsAt || existingExp.startDate || existingExp.endsAt || existingExp.endDate).getTime();
+    if (Number.isFinite(startTime) && startTime <= Date.now()) {
+      return res.status(400).json({
+        message:
+          "Poți edita doar experiențele viitoare. / You can edit only upcoming experiences.",
+      });
     }
-    if (update.pricingMode === "PER_GROUP") {
-      update.activityType = "GROUP";
-      const packageSize = Math.max(
-        1,
-        Number(update.groupPackageSize) || Number(existingExp.groupPackageSize) || Number(update.maxParticipants) || 1
-      );
-      update.groupPackageSize = packageSize;
-      if (!Number(update.maxParticipants) || Number(update.maxParticipants) < packageSize) {
-        update.maxParticipants = packageSize;
-      }
-      if (!existingBookings) {
-        update.remainingSpots = Number(update.maxParticipants);
-      }
+
+    if (String(existingExp.status || "").toLowerCase() === "cancelled" || existingExp.isActive === false) {
+      return res.status(400).json({
+        message:
+          "Experiențele anulate nu mai pot fi editate. / Cancelled experiences can no longer be edited.",
+      });
     }
+
+    const preparedUpdate = buildEditableExperienceUpdate(req.body || {}, existingExp);
+    if (preparedUpdate.error) {
+      return res.status(preparedUpdate.status || 400).json({ message: preparedUpdate.error });
+    }
+    const update = preparedUpdate.update || {};
 
     const mergedMedia = {
       images: update.images !== undefined ? update.images : existingExp.images,
