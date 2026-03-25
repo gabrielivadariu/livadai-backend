@@ -58,6 +58,8 @@ const experienceSchema = new mongoose.Schema(
     images: [{ type: String }],
     videos: [{ type: String }],
     coverImageUrl: { type: String, default: null },
+    coverFocusX: { type: Number, default: 50 },
+    coverFocusY: { type: Number, default: 50 },
     mediaRefs: [
       {
         url: { type: String },

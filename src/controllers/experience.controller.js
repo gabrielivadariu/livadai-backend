@@ -227,6 +227,17 @@ const normalizeCountryCode = (val) => {
   return up;
 };
 
+const normalizeCoverFocusValue = (value, fallback = 50) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(100, Math.max(0, parsed));
+};
+
+const normalizeCoverFocus = (input = {}, fallback = {}) => ({
+  coverFocusX: normalizeCoverFocusValue(input.coverFocusX, normalizeCoverFocusValue(fallback.coverFocusX, 50)),
+  coverFocusY: normalizeCoverFocusValue(input.coverFocusY, normalizeCoverFocusValue(fallback.coverFocusY, 50)),
+});
+
 const prepareExperiencePayload = (inputPayload) => {
   const payload = { ...inputPayload };
   const codeRaw =
@@ -307,6 +318,7 @@ const prepareExperiencePayload = (inputPayload) => {
   if (payload.images?.length && !payload.mainImageUrl) {
     payload.mainImageUrl = payload.images[0];
   }
+  Object.assign(payload, normalizeCoverFocus(payload));
   payload.mediaRefs = buildMediaTargetsFromUrls(collectExperienceMediaUrls(payload));
 
   if (!payload.languages) payload.languages = [];
@@ -320,6 +332,8 @@ const EDITABLE_EXPERIENCE_FIELDS = new Set([
   "description",
   "longDescription",
   "coverImageUrl",
+  "coverFocusX",
+  "coverFocusY",
   "mainImageUrl",
   "images",
 ]);
@@ -382,6 +396,7 @@ const buildEditableExperienceUpdate = (input, existingExp) => {
     input.coverImageUrl !== undefined ? normalizeMediaUrl(input.coverImageUrl) : normalizeMediaUrl(existingExp.coverImageUrl);
   const normalizedMainImage =
     input.mainImageUrl !== undefined ? normalizeMediaUrl(input.mainImageUrl) : normalizeMediaUrl(existingExp.mainImageUrl);
+  const normalizedCoverFocus = normalizeCoverFocus(input, existingExp || {});
 
   if (input.images !== undefined) {
     update.images = normalizedImages;
@@ -392,6 +407,11 @@ const buildEditableExperienceUpdate = (input, existingExp) => {
     const mainImageUrl = normalizedMainImage || coverImageUrl || normalizedImages[0] || "";
     update.coverImageUrl = coverImageUrl;
     update.mainImageUrl = mainImageUrl;
+  }
+
+  if (input.coverFocusX !== undefined || input.coverFocusY !== undefined) {
+    update.coverFocusX = normalizedCoverFocus.coverFocusX;
+    update.coverFocusY = normalizedCoverFocus.coverFocusY;
   }
 
   return { update };
