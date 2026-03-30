@@ -12,6 +12,7 @@ const { buildDisputeOpenedEmail, buildBookingCancelledEmail, formatExperienceDat
 const { isPayoutEligible, logPayoutAttempt } = require("../utils/payout");
 const { sendContentReportEmail, sendDisputeEmail, sendUserReportEmail } = require("../utils/reports");
 const { recalcTrustedParticipant } = require("../utils/trust");
+const { trackServerEvent } = require("../utils/analytics");
 
 const FALLBACK_EXPERIENCE_DURATION_MINUTES = 120;
 const reviewEligibleStatuses = new Set([
@@ -226,6 +227,20 @@ const createBooking = async (req, res) => {
       date,
       timeSlot,
       status: "PENDING",
+    });
+
+    await trackServerEvent({
+      req,
+      eventName: "booking_created",
+      userId: req.user.id,
+      platform: "server",
+      experienceId: experience._id,
+      hostId: experience.host,
+      bookingId: booking._id,
+      properties: {
+        date,
+        timeSlot,
+      },
     });
 
     // Notify host of new booking request

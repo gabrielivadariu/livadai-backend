@@ -7,11 +7,13 @@ const { createNotification } = require("./notifications.controller");
 const { sendEmail } = require("../utils/mailer");
 const { buildBookingConfirmedEmail, formatExperienceDate } = require("../utils/emailTemplates");
 const User = require("../models/user.model");
+const { readRequestAnalyticsContext, trackServerEvent } = require("../utils/analytics");
 
 // New checkout flow: experienceId + quantity
 const createCheckout = async (req, res) => {
   try {
     const { experienceId, quantity } = req.body;
+    const analyticsContext = readRequestAnalyticsContext(req);
     const requestedQty = Math.max(1, Number(quantity) || 1);
     if (!experienceId) return res.status(400).json({ message: "experienceId required" });
 
@@ -167,7 +169,7 @@ const createCheckout = async (req, res) => {
       },
     });
 
-    await Payment.findOneAndUpdate(
+    const paymentDoc = await Payment.findOneAndUpdate(
       { booking: booking._id },
       {
         booking: booking._id,
@@ -181,10 +183,40 @@ const createCheckout = async (req, res) => {
         currency: isServiceFee ? depositCurrency : baseCurrency,
         platformFee: platformFeeMinor,
         paymentType: isServiceFee ? "SERVICE_FEE" : "PAID_BOOKING",
+        analytics: {
+          anonymousId: analyticsContext.anonymousId,
+          sessionId: analyticsContext.sessionId,
+          source: analyticsContext.source,
+          medium: analyticsContext.medium,
+          campaign: analyticsContext.campaign,
+          channelGroup: analyticsContext.channelGroup,
+          landingPage: analyticsContext.landingPage,
+          page: analyticsContext.page,
+          path: analyticsContext.path,
+          platform: analyticsContext.platform,
+        },
         status: "INITIATED",
       },
       { upsert: true, new: true }
     );
+
+    await trackServerEvent({
+      req,
+      eventName: "checkout_started",
+      userId: req.user.id,
+      platform: analyticsContext.platform || "web",
+      context: analyticsContext,
+      experienceId: exp._id,
+      hostId: exp.host,
+      bookingId: booking._id,
+      paymentId: paymentDoc?._id,
+      properties: {
+        pricingMode,
+        quantity: seatQty,
+        checkoutQuantity,
+        isServiceFee,
+      },
+    });
 
     return res.json({ checkoutUrl: session.url, bookingId: booking._id });
   } catch (err) {
@@ -243,14 +275,14 @@ const handlePaymentSuccess = async ({ bookingId, paymentIntentId, sessionId, isD
   }
 
   // Update payment record
-  await Payment.findOneAndUpdate(
+  const paymentDoc = await Payment.findOneAndUpdate(
     { booking: bookingId },
     {
       stripePaymentIntentId: paymentIntentId,
       stripeSessionId: sessionId,
       status: "CONFIRMED",
     },
-    { upsert: true }
+    { upsert: true, new: true }
   );
 
   if (alreadyPaid) {
@@ -267,6 +299,37 @@ const handlePaymentSuccess = async ({ bookingId, paymentIntentId, sessionId, isD
     exp.isActive = false; // hide from list/map
   }
   await exp.save();
+
+  const analyticsContext = paymentDoc?.analytics || {};
+  await trackServerEvent({
+    eventName: "payment_completed",
+    userId: booking.explorer,
+    platform: analyticsContext.platform || "server",
+    context: analyticsContext,
+    experienceId: exp._id,
+    hostId: booking.host,
+    bookingId: booking._id,
+    paymentId: paymentDoc?._id,
+    properties: {
+      amountMinor: paymentDoc?.totalAmount || paymentDoc?.amount || booking.amount || 0,
+      currency: paymentDoc?.currency || booking.currency || "ron",
+      isDeposit: !!isDeposit,
+    },
+  });
+  await trackServerEvent({
+    eventName: "booking_confirmed",
+    userId: booking.explorer,
+    platform: analyticsContext.platform || "server",
+    context: analyticsContext,
+    experienceId: exp._id,
+    hostId: booking.host,
+    bookingId: booking._id,
+    paymentId: paymentDoc?._id,
+    properties: {
+      amountMinor: paymentDoc?.totalAmount || paymentDoc?.amount || booking.amount || 0,
+      currency: paymentDoc?.currency || booking.currency || "ron",
+    },
+  });
 
   // Notifications: explorer + host
   try {

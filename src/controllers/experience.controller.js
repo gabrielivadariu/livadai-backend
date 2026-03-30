@@ -16,6 +16,7 @@ const {
 } = require("../utils/emailTemplates");
 const { deleteCloudinaryUrls, getCloudinaryInfo, getTargetKey } = require("../utils/cloudinary-media");
 const { logMediaDeletion } = require("../utils/mediaDeletionLog");
+const { trackServerEvent } = require("../utils/analytics");
 
 const MAX_RECURRING_OCCURRENCES = 240;
 const BOOKING_STATUSES_COUNTED = ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"];
@@ -429,6 +430,17 @@ const createExperience = async (req, res) => {
     const prepared = prepareExperiencePayload({ ...req.body, host: req.user.id });
     if (prepared.error) return res.status(prepared.status || 400).json({ message: prepared.error });
     const exp = await Experience.create(prepared.payload);
+    await trackServerEvent({
+      req,
+      eventName: "experience_published",
+      userId: req.user.id,
+      platform: "server",
+      experienceId: exp._id,
+      hostId: exp.host,
+      properties: {
+        scheduleType: exp.scheduleType,
+      },
+    });
     return res.status(201).json(exp);
   } catch (err) {
     console.error("Create experience error", err);
@@ -514,6 +526,22 @@ const createRecurringExperiences = async (req, res) => {
     }
 
     const created = await Experience.insertMany(docs, { ordered: true });
+    await Promise.allSettled(
+      created.map((exp) =>
+        trackServerEvent({
+          req,
+          eventName: "experience_published",
+          userId: req.user.id,
+          platform: "server",
+          experienceId: exp._id,
+          hostId: exp.host,
+          properties: {
+            scheduleType: exp.scheduleType,
+            scheduleGroupId: exp.scheduleGroupId || "",
+          },
+        })
+      )
+    );
     return res.status(201).json({
       createdCount: created.length,
       scheduleGroupId: groupId,

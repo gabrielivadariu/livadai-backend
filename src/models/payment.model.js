@@ -20,6 +20,18 @@ const paymentSchema = new mongoose.Schema(
     hostShare: { type: Number },
     platformFee: { type: Number },
     paymentType: { type: String, enum: ["PAID_BOOKING", "DEPOSIT", "SERVICE_FEE"], default: "PAID_BOOKING" },
+    analytics: {
+      anonymousId: { type: String, default: "" },
+      sessionId: { type: String, default: "" },
+      source: { type: String, default: "" },
+      medium: { type: String, default: "" },
+      campaign: { type: String, default: "" },
+      channelGroup: { type: String, default: "" },
+      landingPage: { type: String, default: "" },
+      page: { type: String, default: "" },
+      path: { type: String, default: "" },
+      platform: { type: String, default: "" },
+    },
     status: {
       type: String,
       enum: ["INITIATED", "CONFIRMED", "FAILED", "REFUNDED", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"],

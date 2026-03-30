@@ -12,6 +12,7 @@ const {
 const { validatePasswordStrength } = require("../utils/passwordPolicy");
 const { setAuthCookie, clearAuthCookie, getAuthTokenFromCookie } = require("../utils/authCookies");
 const { isAdminRole } = require("../utils/adminRoles");
+const { trackServerEvent } = require("../utils/analytics");
 
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 5;
@@ -176,6 +177,27 @@ const register = async (req, res) => {
       termsVersion,
       emailVerified: false,
     });
+
+    await trackServerEvent({
+      req,
+      eventName: "user_registered",
+      userId: user._id,
+      platform: "server",
+      properties: {
+        role: user.role,
+      },
+    });
+    if (user.role === "HOST") {
+      await trackServerEvent({
+        req,
+        eventName: "host_registered",
+        userId: user._id,
+        platform: "server",
+        properties: {
+          role: user.role,
+        },
+      });
+    }
 
     sendEmailVerification(user).catch((err) => {
       console.error("Send verification email error:", err?.message || err);
@@ -619,6 +641,16 @@ const becomeHost = async (req, res) => {
     user.isHost = true;
     user.role = isAdminRole(user.role) ? String(user.role || "").trim().toUpperCase() : user.role === "HOST" ? "HOST" : "BOTH";
     await user.save();
+
+    await trackServerEvent({
+      req,
+      eventName: "host_registered",
+      userId: user._id,
+      platform: "server",
+      properties: {
+        role: user.role,
+      },
+    });
 
     const token = signToken(user);
     setAuthCookie(res, token);
