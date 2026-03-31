@@ -16,6 +16,7 @@ const cleanStringList = (value) => (Array.isArray(value) ? value.map((item) => S
 const joinName = (firstName, lastName) => [firstName, lastName].filter(Boolean).join(" ").trim();
 const isSupportedExternalAccount = (item) => ["bank_account", "card"].includes(String(item?.object || ""));
 const isEmailLike = (value = "") => String(value || "").includes("@");
+const STRIPE_ACCESS_STATUS_INACCESSIBLE = "INACCESSIBLE";
 
 const detectNameMatchState = (livadaiName, stripeLegalName) => {
   const local = normalizeName(livadaiName);
@@ -108,6 +109,10 @@ const pickBankAccount = async (stripeAccountId, account) => {
 
 const collectComplianceIssues = (snapshot) => {
   if (!snapshot) return ["NO_COMPLIANCE_SNAPSHOT"];
+  const stripeAccessStatus = String(snapshot?.metadata?.stripeAccessStatus || "").trim().toUpperCase();
+  if (stripeAccessStatus === STRIPE_ACCESS_STATUS_INACCESSIBLE || String(snapshot?.requirementsDisabledReason || "") === "STRIPE_ACCOUNT_INACCESSIBLE") {
+    return ["STRIPE_ACCOUNT_INACCESSIBLE"];
+  }
   const issues = [];
   if (snapshot.nameMatchState === "MISMATCH") issues.push("NAME_MISMATCH");
   if (!snapshot.stripeLegalName && !snapshot.stripeDisplayName) issues.push("STRIPE_NAME_MISSING");
@@ -119,6 +124,87 @@ const collectComplianceIssues = (snapshot) => {
   if (!snapshot.isStripeChargesEnabled) issues.push("STRIPE_CHARGES_DISABLED");
   if (!snapshot.isStripePayoutsEnabled) issues.push("STRIPE_PAYOUTS_DISABLED");
   return issues;
+};
+
+const isStripeAccountInaccessibleError = (error) => {
+  const message = String(error?.message || error || "").toLowerCase();
+  const code = String(error?.code || "").toLowerCase();
+  const type = String(error?.type || error?.rawType || "").toLowerCase();
+
+  if (message.includes("does not have access to account")) return true;
+  if (message.includes("application access may have been revoked")) return true;
+  if (message.includes("no such account")) return true;
+  if (message.includes("account does not exist")) return true;
+  if (code === "resource_missing" && message.includes("account")) return true;
+  if (type === "stripeinvalidrequesterror" && message.includes("account")) return true;
+  return false;
+};
+
+const createHostComplianceAccessErrorSnapshot = async ({
+  userId,
+  stripeAccountId,
+  triggerType = "manual",
+  triggerEventId = "",
+  triggerEventType = "",
+  metadata = {},
+  error = null,
+} = {}) => {
+  const query = userId ? { _id: userId } : stripeAccountId ? { stripeAccountId } : null;
+  if (!query) return null;
+
+  const user = await User.findOne(query).select(
+    "name displayName display_name email role stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted"
+  );
+  if (!user) return null;
+
+  const role = String(user.role || "").toUpperCase();
+  if (!["HOST", "BOTH"].includes(role)) return null;
+
+  const accountId = String(stripeAccountId || user.stripeAccountId || "").trim();
+  if (!accountId) return null;
+
+  const livadaiName = String(user.displayName || user.display_name || user.name || "").trim();
+  const livadaiEmail = String(user.email || "").trim();
+  const accessErrorMessage = String(error?.message || error || "").trim();
+  const accessErrorCode = String(error?.code || "").trim();
+  const accessErrorType = String(error?.type || error?.rawType || "").trim();
+
+  return HostComplianceSnapshot.create({
+    user: user._id,
+    stripeAccountId: accountId,
+    livadaiName,
+    livadaiEmail,
+    stripeBusinessType: "",
+    stripeLegalName: "",
+    stripeDisplayName: "",
+    stripeNameSource: "INACCESSIBLE",
+    nameMatchState: "UNKNOWN",
+    externalAccountId: "",
+    bankName: "",
+    bankLast4: "",
+    bankCountry: DEFAULT_BANK_COUNTRY,
+    bankCurrency: "",
+    bankReferenceSource: "NONE",
+    isStripeChargesEnabled: false,
+    isStripePayoutsEnabled: false,
+    isStripeDetailsSubmitted: false,
+    requirementsDisabledReason: "STRIPE_ACCOUNT_INACCESSIBLE",
+    requirementsCurrentlyDue: [],
+    requirementsEventuallyDue: [],
+    requirementsPastDue: [],
+    requirementsPendingVerification: [],
+    triggerType: String(triggerType || "manual"),
+    triggerEventId: String(triggerEventId || ""),
+    triggerEventType: String(triggerEventType || ""),
+    metadata: {
+      ...(metadata && typeof metadata === "object" ? metadata : {}),
+      stripeAccessStatus: STRIPE_ACCESS_STATUS_INACCESSIBLE,
+      stripeAccessErrorCode: accessErrorCode,
+      stripeAccessErrorType: accessErrorType,
+      stripeAccessErrorMessage: accessErrorMessage,
+      stripeAccessDetectedAt: new Date().toISOString(),
+    },
+  });
 };
 
 const syncHostComplianceSnapshot = async ({
@@ -203,4 +289,6 @@ const syncHostComplianceSnapshot = async ({
 module.exports = {
   syncHostComplianceSnapshot,
   collectComplianceIssues,
+  isStripeAccountInaccessibleError,
+  createHostComplianceAccessErrorSnapshot,
 };

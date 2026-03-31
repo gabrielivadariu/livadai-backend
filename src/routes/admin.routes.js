@@ -15,7 +15,12 @@ const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 const stripe = require("../config/stripe");
 const { createNotification } = require("../controllers/notifications.controller");
 const { recalcTrustedParticipant } = require("../utils/trust");
-const { collectComplianceIssues, syncHostComplianceSnapshot } = require("../utils/hostCompliance");
+const {
+  collectComplianceIssues,
+  syncHostComplianceSnapshot,
+  isStripeAccountInaccessibleError,
+  createHostComplianceAccessErrorSnapshot,
+} = require("../utils/hostCompliance");
 const { sendEmail } = require("../utils/mailer");
 const { buildBookingCancelledEmail } = require("../utils/emailTemplates");
 const {
@@ -723,6 +728,24 @@ const syncHostComplianceSnapshotSafe = async (userId, triggerEventType = "") => 
       error: "",
     };
   } catch (err) {
+    if (isStripeAccountInaccessibleError(err)) {
+      const snapshot = await createHostComplianceAccessErrorSnapshot({
+        userId,
+        triggerType: "admin",
+        triggerEventType: triggerEventType || "admin.hosts.view",
+        metadata: { source: "admin.routes", recovery: "stripe-account-inaccessible" },
+        error: err,
+      });
+      console.warn("Admin compliance sync marked Stripe account inaccessible", {
+        userId: String(userId),
+        triggerEventType: triggerEventType || "admin.hosts.view",
+        stripeCode: String(err?.code || ""),
+      });
+      return {
+        snapshot: snapshot ? (typeof snapshot.toObject === "function" ? snapshot.toObject() : snapshot) : null,
+        error: "",
+      };
+    }
     const message = err?.message || String(err);
     console.error("Admin compliance sync error", {
       userId: String(userId),
@@ -743,6 +766,17 @@ const ensureComplianceMapHasStripeData = async (rows = [], complianceMap = new M
     const existingSnapshot = map.get(id);
     const hasStripeName = String(existingSnapshot?.stripeLegalName || existingSnapshot?.stripeDisplayName || "").trim();
     const hasBankRef = String(existingSnapshot?.bankLast4 || "").trim();
+    const stripeAccessStatus = String(existingSnapshot?.metadata?.stripeAccessStatus || "").trim().toUpperCase();
+    const snapshotStripeAccountId = String(existingSnapshot?.stripeAccountId || "").trim();
+    const currentStripeAccountId = String(row?.stripeAccountId || "").trim();
+    if (
+      existingSnapshot &&
+      stripeAccessStatus === "INACCESSIBLE" &&
+      snapshotStripeAccountId &&
+      snapshotStripeAccountId === currentStripeAccountId
+    ) {
+      continue;
+    }
     if (existingSnapshot && hasStripeName && hasBankRef) continue;
 
     const synced = await syncHostComplianceSnapshotSafe(row._id, triggerEventType || "admin.hosts.list");
