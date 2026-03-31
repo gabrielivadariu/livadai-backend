@@ -201,6 +201,51 @@ const adminDeleteExperienceSeries = async (groupId, scope = "admin.experience.se
   };
 };
 
+const adminDisableExperienceSeries = async (groupId) => {
+  const experiences = await Experience.find({ scheduleGroupId: groupId });
+  if (!experiences.length) return null;
+
+  let updatedCount = 0;
+  const updatedExperienceIds = [];
+  const alreadyDisabledIds = [];
+
+  for (const exp of experiences) {
+    const nextState = {
+      isActive: false,
+      status: "DISABLED",
+      soldOut: true,
+      remainingSpots: 0,
+    };
+    const unchanged =
+      exp.isActive === nextState.isActive &&
+      String(exp.status || "") === nextState.status &&
+      !!exp.soldOut === nextState.soldOut &&
+      Number(exp.remainingSpots ?? 0) === nextState.remainingSpots;
+
+    if (unchanged) {
+      alreadyDisabledIds.push(String(exp._id));
+      continue;
+    }
+
+    exp.isActive = nextState.isActive;
+    exp.status = nextState.status;
+    exp.soldOut = nextState.soldOut;
+    exp.remainingSpots = nextState.remainingSpots;
+    await exp.save();
+    updatedCount += 1;
+    updatedExperienceIds.push(String(exp._id));
+  }
+
+  return {
+    groupId,
+    total: experiences.length,
+    updatedCount,
+    alreadyDisabledCount: alreadyDisabledIds.length,
+    updatedExperienceIds,
+    alreadyDisabledIds,
+  };
+};
+
 const getExperienceEndDate = (exp) => {
   if (!exp) return null;
   const rawEnd = exp.endsAt || exp.endDate;
@@ -2877,6 +2922,49 @@ router.post("/experiences/group/:groupId/delete", requireAdminCapability(ADMIN_C
   } catch (err) {
     console.error("Admin experience series delete error", err);
     return res.status(500).json({ message: "Failed to delete experience series" });
+  }
+});
+
+router.post("/experiences/group/:groupId/disable", requireAdminCapability(ADMIN_CAPABILITIES.EXPERIENCES_WRITE), async (req, res) => {
+  try {
+    const groupId = String(req.params.groupId || "").trim();
+    const reason = String(req.adminReason || req.body?.reason || "").trim();
+    if (!groupId) {
+      return res.status(400).json({ message: "groupId is required" });
+    }
+    if (!reason) {
+      return res.status(400).json({ message: "Reason is required for series disable actions" });
+    }
+
+    const result = await adminDisableExperienceSeries(groupId);
+    if (!result) {
+      return res.status(404).json({ message: "No experiences found for this series" });
+    }
+
+    await writeAdminAuditLog(req, {
+      actionType: "EXPERIENCE_SERIES_DISABLE",
+      targetType: "experience_group",
+      targetId: groupId,
+      reason,
+      diff: {
+        total: Number(result.total || 0),
+        updatedCount: Number(result.updatedCount || 0),
+        alreadyDisabledCount: Number(result.alreadyDisabledCount || 0),
+      },
+      meta: {
+        updatedExperienceIds: result.updatedExperienceIds.slice(0, 25),
+        alreadyDisabledIds: result.alreadyDisabledIds.slice(0, 25),
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: "Experience series disabled",
+      ...result,
+    });
+  } catch (err) {
+    console.error("Admin experience series disable error", err);
+    return res.status(500).json({ message: "Failed to disable experience series" });
   }
 });
 
