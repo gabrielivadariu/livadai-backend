@@ -158,10 +158,8 @@ const adminDeleteExperienceRecord = async (exp, scope = "admin.experience.delete
   };
 };
 
-const adminDeleteExperienceSeries = async (groupId, scope = "admin.experience.series-delete") => {
-  const experiences = await Experience.find({ scheduleGroupId: groupId });
-  if (!experiences.length) return null;
-
+const adminDeleteExperienceSeriesMembers = async (experiences = [], groupId = "", scope = "admin.experience.series-delete") => {
+  if (!Array.isArray(experiences) || !experiences.length) return null;
   let deletedCount = 0;
   let skippedWithBookings = 0;
   let deletedMediaCount = 0;
@@ -206,10 +204,14 @@ const adminDeleteExperienceSeries = async (groupId, scope = "admin.experience.se
   };
 };
 
-const adminDisableExperienceSeries = async (groupId) => {
+const adminDeleteExperienceSeries = async (groupId, scope = "admin.experience.series-delete") => {
   const experiences = await Experience.find({ scheduleGroupId: groupId });
   if (!experiences.length) return null;
+  return adminDeleteExperienceSeriesMembers(experiences, groupId, scope);
+};
 
+const adminDisableExperienceSeriesMembers = async (experiences = [], groupId = "") => {
+  if (!Array.isArray(experiences) || !experiences.length) return null;
   let updatedCount = 0;
   const updatedExperienceIds = [];
   const alreadyDisabledIds = [];
@@ -248,6 +250,78 @@ const adminDisableExperienceSeries = async (groupId) => {
     alreadyDisabledCount: alreadyDisabledIds.length,
     updatedExperienceIds,
     alreadyDisabledIds,
+  };
+};
+
+const adminDisableExperienceSeries = async (groupId) => {
+  const experiences = await Experience.find({ scheduleGroupId: groupId });
+  if (!experiences.length) return null;
+  return adminDisableExperienceSeriesMembers(experiences, groupId);
+};
+
+const buildLegacySeriesMatchQuery = (exp) => {
+  const hostId = exp?.host?._id || exp?.host;
+  const title = String(exp?.title || "").trim();
+  if (!hostId || !title) return null;
+
+  const and = [{ host: hostId }, { title }];
+  const activityType = String(exp?.activityType || "").trim();
+  const environment = String(exp?.environment || "").trim();
+  const currencyCode = String(exp?.currencyCode || "").trim();
+  const durationMinutes = Number(exp?.durationMinutes || 0);
+  const price = Number(exp?.price);
+  const address = String(exp?.address || exp?.location?.formattedAddress || "").trim();
+  const city = String(exp?.city || exp?.location?.city || "").trim();
+  const country = String(exp?.country || exp?.location?.country || "").trim();
+
+  if (activityType) and.push({ activityType });
+  if (environment) and.push({ environment });
+  if (currencyCode) and.push({ currencyCode });
+  if (Number.isFinite(durationMinutes) && durationMinutes > 0) and.push({ durationMinutes });
+  if (Number.isFinite(price)) and.push({ price });
+
+  if (address) {
+    and.push({ $or: [{ address }, { "location.formattedAddress": address }] });
+  } else {
+    if (city) and.push({ $or: [{ city }, { "location.city": city }] });
+    if (country) and.push({ $or: [{ country }, { "location.country": country }] });
+  }
+
+  return and.length > 1 ? { $and: and } : and[0];
+};
+
+const resolveAdminSeriesControl = async (exp) => {
+  if (!exp) return null;
+  if (exp.scheduleGroupId) {
+    const nativeCount = await Experience.countDocuments({ scheduleGroupId: exp.scheduleGroupId });
+    return {
+      isSeries: true,
+      mode: "native",
+      seriesKey: exp.scheduleGroupId,
+      matchedCount: nativeCount,
+    };
+  }
+
+  const matchQuery = buildLegacySeriesMatchQuery(exp);
+  if (!matchQuery) return null;
+
+  const members = await Experience.find(matchQuery)
+    .select("_id host title scheduleGroupId scheduleType startsAt endDate endsAt startDate")
+    .sort({ startsAt: 1, createdAt: 1 });
+
+  if (members.length < 2) return null;
+
+  const scheduleType = String(exp.scheduleType || "").toUpperCase();
+  const canTreatAsLegacySeries = scheduleType === "LONG_TERM" || members.length >= 3;
+  if (!canTreatAsLegacySeries) return null;
+
+  return {
+    isSeries: true,
+    mode: "legacy",
+    seriesKey: `legacy:${String(exp._id)}`,
+    matchedCount: members.length,
+    matchedIds: members.map((row) => String(row._id)),
+    members,
   };
 };
 
@@ -2538,6 +2612,8 @@ router.get("/experiences/:id", async (req, res) => {
           "remainingSpots",
           "soldOut",
           "status",
+          "scheduleType",
+          "scheduleGroupId",
           "environment",
           "startsAt",
           "endsAt",
@@ -2571,6 +2647,7 @@ router.get("/experiences/:id", async (req, res) => {
       .lean();
 
     if (!exp) return res.status(404).json({ message: "Experience not found" });
+    const seriesControl = await resolveAdminSeriesControl(exp);
 
     const expObjectId = new mongoose.Types.ObjectId(id);
 
@@ -2759,6 +2836,15 @@ router.get("/experiences/:id", async (req, res) => {
               isStripeChargesEnabled: !!exp.host.isStripeChargesEnabled,
               isStripePayoutsEnabled: !!exp.host.isStripePayoutsEnabled,
               isStripeDetailsSubmitted: !!exp.host.isStripeDetailsSubmitted,
+            }
+          : null,
+        scheduleType: exp.scheduleType || "ONE_TIME",
+        seriesControl: seriesControl
+          ? {
+              isSeries: !!seriesControl.isSeries,
+              mode: seriesControl.mode || "native",
+              seriesKey: seriesControl.seriesKey || "",
+              matchedCount: Number(seriesControl.matchedCount || 0),
             }
           : null,
       },
@@ -2998,6 +3084,129 @@ router.post("/experiences/group/:groupId/disable", requireAdminCapability(ADMIN_
     });
   } catch (err) {
     console.error("Admin experience series disable error", err);
+    return res.status(500).json({ message: "Failed to disable experience series" });
+  }
+});
+
+router.post("/experiences/:id/series/delete", requireAdminCapability(ADMIN_CAPABILITIES.EXPERIENCES_WRITE), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const reason = String(req.adminReason || req.body?.reason || "").trim();
+    if (!isObjectIdLike(id)) {
+      return res.status(400).json({ message: "Invalid experience id" });
+    }
+    if (!reason) {
+      return res.status(400).json({ message: "Reason is required for series delete actions" });
+    }
+
+    const exp = await Experience.findById(id)
+      .select("host title activityType environment currencyCode durationMinutes price address city country location scheduleType scheduleGroupId")
+      .lean();
+    if (!exp) return res.status(404).json({ message: "Experience not found" });
+
+    const seriesControl = await resolveAdminSeriesControl(exp);
+    if (!seriesControl?.isSeries) {
+      return res.status(400).json({ message: "No series found for this experience" });
+    }
+
+    const result =
+      seriesControl.mode === "native"
+        ? await adminDeleteExperienceSeries(seriesControl.seriesKey)
+        : await adminDeleteExperienceSeriesMembers(seriesControl.members || [], seriesControl.seriesKey, "admin.experience.series-delete.legacy");
+
+    if (!result) {
+      return res.status(404).json({ message: "No experiences found for this series" });
+    }
+
+    await writeAdminAuditLog(req, {
+      actionType: "EXPERIENCE_SERIES_DELETE",
+      targetType: "experience_group",
+      targetId: seriesControl.seriesKey,
+      reason,
+      diff: {
+        total: Number(result.total || 0),
+        deletedCount: Number(result.deletedCount || 0),
+        skippedWithBookings: Number(result.skippedWithBookings || 0),
+        deletedMediaCount: Number(result.deletedMediaCount || 0),
+      },
+      meta: {
+        seriesMode: seriesControl.mode,
+        rootExperienceId: String(id),
+        deletedExperienceIds: result.deletedExperienceIds.slice(0, 25),
+        skippedExperienceIds: result.skippedExperienceIds.slice(0, 25),
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: "Experience series processed",
+      seriesMode: seriesControl.mode,
+      seriesKey: seriesControl.seriesKey,
+      ...result,
+    });
+  } catch (err) {
+    console.error("Admin experience series delete by experience error", err);
+    return res.status(500).json({ message: "Failed to delete experience series" });
+  }
+});
+
+router.post("/experiences/:id/series/disable", requireAdminCapability(ADMIN_CAPABILITIES.EXPERIENCES_WRITE), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const reason = String(req.adminReason || req.body?.reason || "").trim();
+    if (!isObjectIdLike(id)) {
+      return res.status(400).json({ message: "Invalid experience id" });
+    }
+    if (!reason) {
+      return res.status(400).json({ message: "Reason is required for series disable actions" });
+    }
+
+    const exp = await Experience.findById(id)
+      .select("host title activityType environment currencyCode durationMinutes price address city country location scheduleType scheduleGroupId")
+      .lean();
+    if (!exp) return res.status(404).json({ message: "Experience not found" });
+
+    const seriesControl = await resolveAdminSeriesControl(exp);
+    if (!seriesControl?.isSeries) {
+      return res.status(400).json({ message: "No series found for this experience" });
+    }
+
+    const result =
+      seriesControl.mode === "native"
+        ? await adminDisableExperienceSeries(seriesControl.seriesKey)
+        : await adminDisableExperienceSeriesMembers(seriesControl.members || [], seriesControl.seriesKey);
+
+    if (!result) {
+      return res.status(404).json({ message: "No experiences found for this series" });
+    }
+
+    await writeAdminAuditLog(req, {
+      actionType: "EXPERIENCE_SERIES_DISABLE",
+      targetType: "experience_group",
+      targetId: seriesControl.seriesKey,
+      reason,
+      diff: {
+        total: Number(result.total || 0),
+        updatedCount: Number(result.updatedCount || 0),
+        alreadyDisabledCount: Number(result.alreadyDisabledCount || 0),
+      },
+      meta: {
+        seriesMode: seriesControl.mode,
+        rootExperienceId: String(id),
+        updatedExperienceIds: result.updatedExperienceIds.slice(0, 25),
+        alreadyDisabledIds: result.alreadyDisabledIds.slice(0, 25),
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: "Experience series disabled",
+      seriesMode: seriesControl.mode,
+      seriesKey: seriesControl.seriesKey,
+      ...result,
+    });
+  } catch (err) {
+    console.error("Admin experience series disable by experience error", err);
     return res.status(500).json({ message: "Failed to disable experience series" });
   }
 });
