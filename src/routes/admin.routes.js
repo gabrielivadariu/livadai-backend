@@ -10,6 +10,8 @@ const Message = require("../models/message.model");
 const MediaDeletionLog = require("../models/mediaDeletionLog.model");
 const AdminAuditLog = require("../models/adminAuditLog.model");
 const HostComplianceSnapshot = require("../models/hostComplianceSnapshot.model");
+const { deleteCloudinaryUrls, getCloudinaryInfo } = require("../utils/cloudinary-media");
+const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 const stripe = require("../config/stripe");
 const { createNotification } = require("../controllers/notifications.controller");
 const { recalcTrustedParticipant } = require("../utils/trust");
@@ -55,6 +57,149 @@ const hasExperienceMedia = (exp) =>
     exp?.mainImageUrl ||
     exp?.coverImageUrl
   );
+
+const collectExperienceMediaUrls = (exp) =>
+  [
+    ...(exp?.images || []),
+    ...(exp?.videos || []),
+    exp?.mainImageUrl,
+    exp?.coverImageUrl,
+  ].filter(Boolean);
+
+const buildExperienceMediaTargetsFromUrls = (urls) => {
+  const refs = [];
+  const seen = new Set();
+  for (const url of urls || []) {
+    const info = getCloudinaryInfo(url);
+    if (!info) continue;
+    const key = `${info.resourceType || "image"}:${info.publicId}`;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    refs.push({
+      url,
+      publicId: info.publicId,
+      resourceType: info.resourceType,
+    });
+  }
+  return refs;
+};
+
+const getExperienceMediaTargets = (exp) => {
+  const refs = Array.isArray(exp?.mediaRefs) ? exp.mediaRefs : [];
+  if (refs.length) {
+    return refs
+      .map((ref) => ({
+        url: ref?.url,
+        publicId: ref?.publicId,
+        resourceType: ref?.resourceType || "image",
+      }))
+      .filter((ref) => !!ref.publicId || !!ref.url);
+  }
+  return buildExperienceMediaTargetsFromUrls(collectExperienceMediaUrls(exp));
+};
+
+const adminDeleteExperienceRecord = async (exp, scope = "admin.experience.delete") => {
+  const hasBookings = await Booking.findOne({ experience: exp._id }).select("_id");
+
+  if (!hasBookings) {
+    const mediaTargets = getExperienceMediaTargets(exp);
+    await Experience.deleteOne({ _id: exp._id });
+    let deletedMediaCount = 0;
+    if (mediaTargets.length) {
+      deletedMediaCount = await deleteCloudinaryUrls(mediaTargets, { scope });
+      await logMediaDeletion({
+        scope,
+        requestedCount: mediaTargets.length,
+        deletedCount: deletedMediaCount,
+        entityType: "experience",
+        entityId: exp._id,
+        reason: "admin-delete-without-bookings",
+      });
+    }
+    return {
+      status: "deleted",
+      experienceId: String(exp._id),
+      groupId: exp.scheduleGroupId || null,
+      hasBookings: false,
+      deletedMediaCount,
+    };
+  }
+
+  const before = {
+    status: exp.status || "",
+    isActive: exp.isActive !== false,
+    soldOut: !!exp.soldOut,
+    remainingSpots: Number(exp.remainingSpots ?? 0),
+  };
+
+  exp.status = "cancelled";
+  exp.isActive = false;
+  exp.soldOut = true;
+  exp.remainingSpots = 0;
+  await exp.save();
+
+  return {
+    status: "cancelled",
+    experienceId: String(exp._id),
+    groupId: exp.scheduleGroupId || null,
+    hasBookings: true,
+    before,
+    after: {
+      status: exp.status || "",
+      isActive: exp.isActive !== false,
+      soldOut: !!exp.soldOut,
+      remainingSpots: Number(exp.remainingSpots ?? 0),
+    },
+  };
+};
+
+const adminDeleteExperienceSeries = async (groupId, scope = "admin.experience.series-delete") => {
+  const experiences = await Experience.find({ scheduleGroupId: groupId });
+  if (!experiences.length) return null;
+
+  let deletedCount = 0;
+  let skippedWithBookings = 0;
+  let deletedMediaCount = 0;
+  const deletedExperienceIds = [];
+  const skippedExperienceIds = [];
+
+  for (const exp of experiences) {
+    const hasBookings = await Booking.findOne({ experience: exp._id }).select("_id");
+    if (hasBookings) {
+      skippedWithBookings += 1;
+      skippedExperienceIds.push(String(exp._id));
+      continue;
+    }
+
+    const mediaTargets = getExperienceMediaTargets(exp);
+    await Experience.deleteOne({ _id: exp._id });
+    deletedCount += 1;
+    deletedExperienceIds.push(String(exp._id));
+
+    if (mediaTargets.length) {
+      const mediaDeletedForExp = await deleteCloudinaryUrls(mediaTargets, { scope });
+      deletedMediaCount += mediaDeletedForExp;
+      await logMediaDeletion({
+        scope,
+        requestedCount: mediaTargets.length,
+        deletedCount: mediaDeletedForExp,
+        entityType: "experience",
+        entityId: exp._id,
+        reason: "admin-group-delete-without-bookings",
+      });
+    }
+  }
+
+  return {
+    groupId,
+    total: experiences.length,
+    deletedCount,
+    skippedWithBookings,
+    deletedMediaCount,
+    deletedExperienceIds,
+    skippedExperienceIds,
+  };
+};
 
 const getExperienceEndDate = (exp) => {
   if (!exp) return null;
@@ -209,6 +354,9 @@ const serializeAdminExperience = (exp, participantsByExperience = new Map()) => 
   title: exp.title || "",
   status: exp.status || "",
   isActive: exp.isActive !== false,
+  scheduleGroupId: exp.scheduleGroupId || null,
+  isSeries: !!exp.scheduleGroupId,
+  seriesId: exp.scheduleGroupId || null,
   price: typeof exp.price === "number" ? exp.price : 0,
   environment: exp.environment || null,
   city: exp.city || exp.location?.city || "",
@@ -2636,6 +2784,99 @@ router.patch("/experiences/:id", requireAdminCapability(ADMIN_CAPABILITIES.EXPER
   } catch (err) {
     console.error("Admin experience update error", err);
     return res.status(500).json({ message: "Failed to update experience" });
+  }
+});
+
+router.post("/experiences/:id/delete", requireAdminCapability(ADMIN_CAPABILITIES.EXPERIENCES_WRITE), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const reason = String(req.adminReason || req.body?.reason || "").trim();
+    if (!isObjectIdLike(id)) {
+      return res.status(400).json({ message: "Invalid experience id" });
+    }
+    if (!reason) {
+      return res.status(400).json({ message: "Reason is required for delete actions" });
+    }
+
+    const exp = await Experience.findById(id).populate("host", "name displayName display_name email");
+    if (!exp) return res.status(404).json({ message: "Experience not found" });
+
+    const result = await adminDeleteExperienceRecord(exp);
+    await writeAdminAuditLog(req, {
+      actionType: result.status === "deleted" ? "EXPERIENCE_DELETE" : "EXPERIENCE_CANCEL",
+      targetType: "experience",
+      targetId: String(exp._id),
+      reason,
+      diff:
+        result.status === "deleted"
+          ? {
+              deleted: true,
+              deletedMediaCount: Number(result.deletedMediaCount || 0),
+            }
+          : {
+              before: result.before,
+              after: result.after,
+            },
+      meta: {
+        hostId: exp.host?._id ? String(exp.host._id) : String(exp.host || ""),
+        hostEmail: exp.host?.email || undefined,
+        scheduleGroupId: exp.scheduleGroupId || null,
+        hadBookings: !!result.hasBookings,
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: result.status === "deleted" ? "Experience deleted" : "Experience cancelled",
+      ...result,
+    });
+  } catch (err) {
+    console.error("Admin experience delete error", err);
+    return res.status(500).json({ message: "Failed to delete experience" });
+  }
+});
+
+router.post("/experiences/group/:groupId/delete", requireAdminCapability(ADMIN_CAPABILITIES.EXPERIENCES_WRITE), async (req, res) => {
+  try {
+    const groupId = String(req.params.groupId || "").trim();
+    const reason = String(req.adminReason || req.body?.reason || "").trim();
+    if (!groupId) {
+      return res.status(400).json({ message: "groupId is required" });
+    }
+    if (!reason) {
+      return res.status(400).json({ message: "Reason is required for series delete actions" });
+    }
+
+    const result = await adminDeleteExperienceSeries(groupId);
+    if (!result) {
+      return res.status(404).json({ message: "No experiences found for this series" });
+    }
+
+    await writeAdminAuditLog(req, {
+      actionType: "EXPERIENCE_SERIES_DELETE",
+      targetType: "experience_group",
+      targetId: groupId,
+      reason,
+      diff: {
+        total: Number(result.total || 0),
+        deletedCount: Number(result.deletedCount || 0),
+        skippedWithBookings: Number(result.skippedWithBookings || 0),
+        deletedMediaCount: Number(result.deletedMediaCount || 0),
+      },
+      meta: {
+        deletedExperienceIds: result.deletedExperienceIds.slice(0, 25),
+        skippedExperienceIds: result.skippedExperienceIds.slice(0, 25),
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: "Experience series processed",
+      ...result,
+    });
+  } catch (err) {
+    console.error("Admin experience series delete error", err);
+    return res.status(500).json({ message: "Failed to delete experience series" });
   }
 });
 
