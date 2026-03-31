@@ -5,8 +5,69 @@ const { isPayoutEligible, logPayoutAttempt } = require("../utils/payout");
 const { syncHostComplianceSnapshot } = require("../utils/hostCompliance");
 const { HOST_FEE_MODES, calculateHostFeeBreakdown, getSavedHostStripeFeeConfig, normalizeHostFeeMode } = require("../utils/hostFeePolicy");
 
-const REFRESH_URL = process.env.FRONTEND_REFRESH_URL || "http://localhost:3000/stripe/refresh";
-const RETURN_URL = process.env.FRONTEND_RETURN_URL || "http://localhost:3000/stripe/success";
+const DEFAULT_FRONTEND_ORIGINS = [
+  "https://livadai.com",
+  "https://www.livadai.com",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+];
+
+const normalizeOrigin = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    return new URL(raw).origin;
+  } catch (_err) {
+    return "";
+  }
+};
+
+const getConfiguredFrontendOrigins = () => {
+  const configuredOrigins = String(process.env.ALLOWED_WEB_ORIGINS || "")
+    .split(",")
+    .map((item) => normalizeOrigin(item))
+    .filter(Boolean);
+
+  return new Set(
+    [
+      ...DEFAULT_FRONTEND_ORIGINS,
+      normalizeOrigin(process.env.FRONTEND_URL),
+      normalizeOrigin(process.env.FRONTEND_RETURN_URL),
+      normalizeOrigin(process.env.FRONTEND_REFRESH_URL),
+      ...configuredOrigins,
+    ].filter(Boolean)
+  );
+};
+
+const buildFallbackFrontendOrigin = () =>
+  normalizeOrigin(process.env.FRONTEND_RETURN_URL) ||
+  normalizeOrigin(process.env.FRONTEND_REFRESH_URL) ||
+  normalizeOrigin(process.env.FRONTEND_URL) ||
+  "http://localhost:3000";
+
+const resolveFrontendOriginFromRequest = (req) => {
+  const allowedOrigins = getConfiguredFrontendOrigins();
+  const requestOrigin = normalizeOrigin(req?.headers?.origin);
+  if (requestOrigin && allowedOrigins.has(requestOrigin)) {
+    return requestOrigin;
+  }
+
+  const refererOrigin = normalizeOrigin(req?.headers?.referer);
+  if (refererOrigin && allowedOrigins.has(refererOrigin)) {
+    return refererOrigin;
+  }
+
+  return buildFallbackFrontendOrigin();
+};
+
+const buildStripeOnboardingUrls = (req) => {
+  const frontendOrigin = resolveFrontendOriginFromRequest(req);
+  return {
+    refreshUrl: `${frontendOrigin}/stripe/refresh`,
+    returnUrl: `${frontendOrigin}/stripe/success`,
+  };
+};
+
 const ensureStripeAccountUniqueness = async (accountId, userId) => {
   const existing = await User.findOne({
     stripeAccountId: String(accountId || "").trim(),
@@ -152,11 +213,12 @@ const createHostAccount = async (req, res) => {
     }
 
     await ensureStripeMetadataOwnership(accountId, user);
+    const onboardingUrls = buildStripeOnboardingUrls(req);
 
     const accountLink = await stripe.accountLinks.create({
       account: accountId,
-      refresh_url: REFRESH_URL,
-      return_url: RETURN_URL,
+      refresh_url: onboardingUrls.refreshUrl,
+      return_url: onboardingUrls.returnUrl,
       type: "account_onboarding",
     });
 
@@ -318,10 +380,11 @@ const createOnboardingLink = async (req, res) => {
     if (!user.stripeAccountId) {
       return res.status(400).json({ message: "Stripe account not connected" });
     }
+    const onboardingUrls = buildStripeOnboardingUrls(req);
     const accountLink = await stripe.accountLinks.create({
       account: user.stripeAccountId,
-      refresh_url: REFRESH_URL,
-      return_url: RETURN_URL,
+      refresh_url: onboardingUrls.refreshUrl,
+      return_url: onboardingUrls.returnUrl,
       type: "account_onboarding",
     });
     return res.json({ url: accountLink.url, stripeAccountId: user.stripeAccountId });
