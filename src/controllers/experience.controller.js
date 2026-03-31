@@ -239,6 +239,82 @@ const normalizeCoverFocus = (input = {}, fallback = {}) => ({
   coverFocusY: normalizeCoverFocusValue(input.coverFocusY, normalizeCoverFocusValue(fallback.coverFocusY, 50)),
 });
 
+const buildStripePublishGateResult = ({
+  stripeAccountId,
+  detailsSubmitted,
+  chargesEnabled,
+  payoutsEnabled,
+}) => {
+  if (!stripeAccountId) {
+    return {
+      ok: false,
+      code: "STRIPE_ACCOUNT_REQUIRED",
+      message: "Connect your Stripe account before publishing experiences.",
+    };
+  }
+
+  if (!detailsSubmitted || !chargesEnabled || !payoutsEnabled) {
+    return {
+      ok: false,
+      code: "STRIPE_ACCOUNT_NOT_READY_FOR_PUBLISHING",
+      message: "Complete your Stripe onboarding before publishing experiences.",
+    };
+  }
+
+  return { ok: true };
+};
+
+const ensureHostStripeReadyForPublishing = async (user) => {
+  if (!user) {
+    return buildStripePublishGateResult({
+      stripeAccountId: "",
+      detailsSubmitted: false,
+      chargesEnabled: false,
+      payoutsEnabled: false,
+    });
+  }
+
+  let stripeAccountId = String(user.stripeAccountId || "").trim();
+  let detailsSubmitted = !!user.isStripeDetailsSubmitted;
+  let chargesEnabled = !!user.isStripeChargesEnabled;
+  let payoutsEnabled = !!user.isStripePayoutsEnabled;
+
+  if (stripeAccountId && (!detailsSubmitted || !chargesEnabled || !payoutsEnabled)) {
+    try {
+      const account = await stripe.accounts.retrieve(stripeAccountId);
+      const refreshedFlags = {
+        isStripeDetailsSubmitted: !!account?.details_submitted,
+        isStripeChargesEnabled: !!account?.charges_enabled,
+        isStripePayoutsEnabled: !!account?.payouts_enabled,
+      };
+
+      detailsSubmitted = refreshedFlags.isStripeDetailsSubmitted;
+      chargesEnabled = refreshedFlags.isStripeChargesEnabled;
+      payoutsEnabled = refreshedFlags.isStripePayoutsEnabled;
+
+      if (
+        user.isStripeDetailsSubmitted !== refreshedFlags.isStripeDetailsSubmitted ||
+        user.isStripeChargesEnabled !== refreshedFlags.isStripeChargesEnabled ||
+        user.isStripePayoutsEnabled !== refreshedFlags.isStripePayoutsEnabled
+      ) {
+        user.isStripeDetailsSubmitted = refreshedFlags.isStripeDetailsSubmitted;
+        user.isStripeChargesEnabled = refreshedFlags.isStripeChargesEnabled;
+        user.isStripePayoutsEnabled = refreshedFlags.isStripePayoutsEnabled;
+        await user.save();
+      }
+    } catch (err) {
+      console.error("Stripe publish gate refresh failed", err?.message || err);
+    }
+  }
+
+  return buildStripePublishGateResult({
+    stripeAccountId,
+    detailsSubmitted,
+    chargesEnabled,
+    payoutsEnabled,
+  });
+};
+
 const prepareExperiencePayload = (inputPayload) => {
   const payload = { ...inputPayload };
   const codeRaw =
@@ -422,10 +498,12 @@ const createExperience = async (req, res) => {
   try {
     const currentUser = await User.findById(req.user.id);
     if (currentUser?.isBanned) return res.status(403).json({ message: "Host banned" });
-    if (!currentUser?.stripeAccountId) {
-      return res
-        .status(403)
-        .json({ message: "Pentru a crea experiențe, trebuie să îți conectezi și activezi portofelul Stripe." });
+    const stripeGate = await ensureHostStripeReadyForPublishing(currentUser);
+    if (!stripeGate.ok) {
+      return res.status(403).json({
+        code: stripeGate.code,
+        message: stripeGate.message,
+      });
     }
     const prepared = prepareExperiencePayload({ ...req.body, host: req.user.id });
     if (prepared.error) return res.status(prepared.status || 400).json({ message: prepared.error });
@@ -452,10 +530,12 @@ const createRecurringExperiences = async (req, res) => {
   try {
     const currentUser = await User.findById(req.user.id);
     if (currentUser?.isBanned) return res.status(403).json({ message: "Host banned" });
-    if (!currentUser?.stripeAccountId) {
-      return res
-        .status(403)
-        .json({ message: "Pentru a crea experiențe, trebuie să îți conectezi și activezi portofelul Stripe." });
+    const stripeGate = await ensureHostStripeReadyForPublishing(currentUser);
+    if (!stripeGate.ok) {
+      return res.status(403).json({
+        code: stripeGate.code,
+        message: stripeGate.message,
+      });
     }
 
     const { occurrences, recurrenceExcludedDates, ...basePayload } = req.body || {};
