@@ -45,6 +45,13 @@ const userSchema = new mongoose.Schema(
     isStripeChargesEnabled: { type: Boolean, default: false },
     isStripePayoutsEnabled: { type: Boolean, default: false },
     isStripeDetailsSubmitted: { type: Boolean, default: false },
+    hostFeeMode: {
+      type: String,
+      enum: ["STANDARD", "HOST_PAYS_STRIPE"],
+      default: "STANDARD",
+    },
+    hostStripeFeePercentBps: { type: Number, default: 0 },
+    hostStripeFeeFixedMinor: { type: Number, default: 0 },
     isTrustedParticipant: { type: Boolean, default: false },
     clientFaultCancelsCount: { type: Number, default: 0 },
     phone: { type: String },

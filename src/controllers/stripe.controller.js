@@ -3,11 +3,10 @@ const User = require("../models/user.model");
 const Transaction = require("../models/transaction.model");
 const { isPayoutEligible, logPayoutAttempt } = require("../utils/payout");
 const { syncHostComplianceSnapshot } = require("../utils/hostCompliance");
+const { HOST_FEE_MODES, calculateHostFeeBreakdown, getSavedHostStripeFeeConfig, normalizeHostFeeMode } = require("../utils/hostFeePolicy");
 
 const REFRESH_URL = process.env.FRONTEND_REFRESH_URL || "http://localhost:3000/stripe/refresh";
 const RETURN_URL = process.env.FRONTEND_RETURN_URL || "http://localhost:3000/stripe/success";
-const PLATFORM_FEE = 0.1; // 10%
-
 const ensureStripeAccountUniqueness = async (accountId, userId) => {
   const existing = await User.findOne({
     stripeAccountId: String(accountId || "").trim(),
@@ -213,17 +212,37 @@ const createCheckout = async (req, res) => {
 
     const amountMinor = Math.round(Number(amount));
     if (amountMinor <= 0) return res.status(400).json({ message: "Invalid amount" });
-    const platformFee = Math.round(amountMinor * PLATFORM_FEE);
+    const paymentSplit = calculateHostFeeBreakdown({
+      amountMinor,
+      feeMode: normalizeHostFeeMode(host.hostFeeMode),
+      stripeFeeConfig: getSavedHostStripeFeeConfig(host),
+    });
+
+    if (paymentSplit.errorCode === "HOST_PAYS_STRIPE_CONFIG_MISSING") {
+      return res.status(503).json({ message: "Host fee policy is not configured correctly. Please contact support." });
+    }
+    if (paymentSplit.errorCode === "HOST_NET_AMOUNT_TOO_LOW") {
+      return res.status(400).json({ message: "Amount is too low for the selected host fee policy." });
+    }
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amountMinor,
       currency: "ron",
       automatic_payment_methods: { enabled: true },
-      transfer_data: { destination: host.stripeAccountId },
-      application_fee_amount: platformFee,
+      transfer_data:
+        paymentSplit.modeApplied === HOST_FEE_MODES.HOST_PAYS_STRIPE
+          ? { destination: host.stripeAccountId, amount: paymentSplit.transferAmountMinor }
+          : { destination: host.stripeAccountId },
+      ...(paymentSplit.modeApplied === HOST_FEE_MODES.STANDARD && paymentSplit.platformFeeMinor > 0
+        ? { application_fee_amount: paymentSplit.platformFeeMinor }
+        : {}),
       metadata: {
         hostId: hostId.toString(),
         clientId: req.user.id,
+        hostFeeMode: paymentSplit.modeApplied,
+        platformFeeMinor: String(paymentSplit.platformFeeMinor || 0),
+        estimatedStripeFeeMinor: String(paymentSplit.estimatedStripeFeeMinor || 0),
+        hostNetAmountMinor: String(paymentSplit.hostNetAmountMinor || 0),
       },
     });
 

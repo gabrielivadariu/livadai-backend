@@ -16,6 +16,13 @@ const { recalcTrustedParticipant } = require("../utils/trust");
 const { collectComplianceIssues, syncHostComplianceSnapshot } = require("../utils/hostCompliance");
 const { sendEmail } = require("../utils/mailer");
 const { buildBookingCancelledEmail } = require("../utils/emailTemplates");
+const {
+  HOST_FEE_MODES,
+  normalizeHostFeeMode,
+  getGlobalHostPaysStripeConfig,
+  buildStripeFeeConfig,
+  calculateHostFeeBreakdown,
+} = require("../utils/hostFeePolicy");
 const { authenticate, requireAdminAllowlist, requireAdminCapability, requireOwnerAdmin } = require("../middleware/auth.middleware");
 const {
   ADMIN_ROLES,
@@ -38,6 +45,7 @@ const adminRateLimitState = new Map();
 const ADMIN_RATE_LIMIT_WINDOW_MS = Number(process.env.ADMIN_RATE_LIMIT_WINDOW_MS || 60_000);
 const ADMIN_RATE_LIMIT_MAX = Number(process.env.ADMIN_RATE_LIMIT_MAX || 240);
 const hasOwnerWrite = (role) => hasAdminCapability(role, ADMIN_CAPABILITIES.OWNER_WRITE);
+const HOST_FEE_POLICY_SAMPLE_AMOUNT_MINOR = 100 * 100;
 
 const hasExperienceMedia = (exp) =>
   !!(
@@ -366,10 +374,52 @@ const serializeAdminPaymentsHost = (user) => ({
   isStripeChargesEnabled: !!user.isStripeChargesEnabled,
   isStripePayoutsEnabled: !!user.isStripePayoutsEnabled,
   isStripeDetailsSubmitted: !!user.isStripeDetailsSubmitted,
+  hostFeeMode: normalizeHostFeeMode(user.hostFeeMode),
+  hostStripeFeePercentBps: Number(user.hostStripeFeePercentBps || 0),
+  hostStripeFeeFixedMinor: Number(user.hostStripeFeeFixedMinor || 0),
   totalEvents: Number(user.total_events || 0),
   totalParticipants: Number(user.total_participants || 0),
   createdAt: user.createdAt || null,
 });
+
+const buildAdminHostFeePolicy = (user) => {
+  const globalStripeFeeConfig = getGlobalHostPaysStripeConfig();
+  const currentMode = normalizeHostFeeMode(user?.hostFeeMode);
+  const savedStripeFeeConfig = buildStripeFeeConfig({
+    percentBps: user?.hostStripeFeePercentBps,
+    fixedMinor: user?.hostStripeFeeFixedMinor,
+  });
+  const previewAmountMinor = HOST_FEE_POLICY_SAMPLE_AMOUNT_MINOR;
+
+  return {
+    currentMode,
+    sampleAmountMinor: previewAmountMinor,
+    canEdit: true,
+    globalStripeFeeConfig,
+    savedStripeFeeConfig,
+    preview: {
+      standard: calculateHostFeeBreakdown({
+        amountMinor: previewAmountMinor,
+        feeMode: HOST_FEE_MODES.STANDARD,
+      }),
+      hostPaysStripe: calculateHostFeeBreakdown({
+        amountMinor: previewAmountMinor,
+        feeMode: HOST_FEE_MODES.HOST_PAYS_STRIPE,
+        stripeFeeConfig: currentMode === HOST_FEE_MODES.HOST_PAYS_STRIPE && savedStripeFeeConfig.configured ? savedStripeFeeConfig : globalStripeFeeConfig,
+      }),
+      availableModes: [
+        {
+          value: HOST_FEE_MODES.STANDARD,
+          label: "Standard",
+        },
+        {
+          value: HOST_FEE_MODES.HOST_PAYS_STRIPE,
+          label: "0% LIVADAI + host pays Stripe",
+        },
+      ],
+    },
+  };
+};
 
 const serializeAdminComplianceHost = (user, snapshot = null) => {
   const base = serializeAdminPaymentsHost(user);
@@ -395,6 +445,7 @@ const serializeAdminComplianceHost = (user, snapshot = null) => {
     requirementsCurrentlyDueCount: Number(snapshot?.requirementsCurrentlyDue?.length || 0),
     snapshotAt: snapshot?.createdAt || null,
     issues,
+    feePolicy: buildAdminHostFeePolicy(user),
   };
 };
 
@@ -1410,6 +1461,9 @@ router.get("/hosts/:id", async (req, res) => {
           "isStripeChargesEnabled",
           "isStripePayoutsEnabled",
           "isStripeDetailsSubmitted",
+          "hostFeeMode",
+          "hostStripeFeePercentBps",
+          "hostStripeFeeFixedMinor",
           "accountDeletionStatus",
           "accountDeletionRequestedAt",
           "accountDeletionScheduledAt",
@@ -1646,6 +1700,78 @@ router.get("/hosts/:id", async (req, res) => {
   } catch (err) {
     console.error("Admin host details error", err);
     return res.status(500).json({ message: "Failed to load host details" });
+  }
+});
+
+router.patch("/hosts/:id/fee-policy", requireOwnerAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isObjectIdLike(id)) {
+      return res.status(400).json({ message: "Invalid host id" });
+    }
+
+    const reason = String(req.adminReason || req.body?.reason || "").trim();
+    if (!reason) {
+      return res.status(400).json({ message: "Reason is required" });
+    }
+
+    const nextMode = normalizeHostFeeMode(req.body?.feeMode);
+    if (![HOST_FEE_MODES.STANDARD, HOST_FEE_MODES.HOST_PAYS_STRIPE].includes(nextMode)) {
+      return res.status(400).json({ message: "Invalid fee mode" });
+    }
+
+    const host = await User.findById(id);
+    if (!host || !["HOST", "BOTH"].includes(normalizeRole(host.role))) {
+      return res.status(404).json({ message: "Host not found" });
+    }
+
+    const before = {
+      hostFeeMode: normalizeHostFeeMode(host.hostFeeMode),
+      hostStripeFeePercentBps: Number(host.hostStripeFeePercentBps || 0),
+      hostStripeFeeFixedMinor: Number(host.hostStripeFeeFixedMinor || 0),
+    };
+
+    if (nextMode === HOST_FEE_MODES.HOST_PAYS_STRIPE) {
+      const config = getGlobalHostPaysStripeConfig();
+      if (!config.configured) {
+        return res.status(400).json({
+          message:
+            "Host pays Stripe fee is not configured. Set STRIPE_HOST_PAYS_FEE_PERCENT_BPS and STRIPE_HOST_PAYS_FEE_FIXED_MINOR first.",
+        });
+      }
+      host.hostFeeMode = HOST_FEE_MODES.HOST_PAYS_STRIPE;
+      host.hostStripeFeePercentBps = config.percentBps;
+      host.hostStripeFeeFixedMinor = config.fixedMinor;
+    } else {
+      host.hostFeeMode = HOST_FEE_MODES.STANDARD;
+      host.hostStripeFeePercentBps = 0;
+      host.hostStripeFeeFixedMinor = 0;
+    }
+
+    await host.save();
+
+    await writeAdminAuditLog(req, {
+      actionType: "HOST_FEE_POLICY_UPDATE",
+      targetType: "host",
+      targetId: String(host._id),
+      reason,
+      diff: {
+        before,
+        after: {
+          hostFeeMode: normalizeHostFeeMode(host.hostFeeMode),
+          hostStripeFeePercentBps: Number(host.hostStripeFeePercentBps || 0),
+          hostStripeFeeFixedMinor: Number(host.hostStripeFeeFixedMinor || 0),
+        },
+      },
+    });
+
+    return res.json({
+      message: "Host fee policy updated",
+      feePolicy: buildAdminHostFeePolicy(host),
+    });
+  } catch (err) {
+    console.error("Admin host fee policy update error", err);
+    return res.status(500).json({ message: "Failed to update host fee policy" });
   }
 });
 

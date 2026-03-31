@@ -8,6 +8,7 @@ const { sendEmail } = require("../utils/mailer");
 const { buildBookingConfirmedEmail, formatExperienceDate } = require("../utils/emailTemplates");
 const User = require("../models/user.model");
 const { readRequestAnalyticsContext, trackServerEvent } = require("../utils/analytics");
+const { HOST_FEE_MODES, calculateHostFeeBreakdown, getSavedHostStripeFeeConfig, normalizeHostFeeMode } = require("../utils/hostFeePolicy");
 
 // New checkout flow: experienceId + quantity
 const createCheckout = async (req, res) => {
@@ -126,7 +127,30 @@ const createCheckout = async (req, res) => {
       ? `${appScheme}://payment-success?session_id={CHECKOUT_SESSION_ID}`
       : `${baseUrl.replace(/\/$/, "")}/payment-success?session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${baseUrl.replace(/\/$/, "")}/payment-cancel`;
-    const platformFeeMinor = isServiceFee ? 0 : Math.round(amount * 0.1);
+    const hostFeeMode = normalizeHostFeeMode(host?.hostFeeMode);
+    const hostStripeFeeConfig = getSavedHostStripeFeeConfig(host);
+    const paymentSplit = isServiceFee
+      ? {
+          modeApplied: HOST_FEE_MODES.STANDARD,
+          platformFeeMinor: 0,
+          transferAmountMinor: 0,
+          hostNetAmountMinor: 0,
+          estimatedStripeFeeMinor: 0,
+        }
+      : calculateHostFeeBreakdown({
+          amountMinor: amount,
+          feeMode: hostFeeMode,
+          stripeFeeConfig: hostStripeFeeConfig,
+        });
+
+    if (paymentSplit.errorCode === "HOST_PAYS_STRIPE_CONFIG_MISSING") {
+      return res.status(503).json({ message: "Host fee policy is not configured correctly. Please contact support." });
+    }
+    if (paymentSplit.errorCode === "HOST_NET_AMOUNT_TOO_LOW") {
+      return res.status(400).json({ message: "Experience price is too low for the selected host fee policy." });
+    }
+
+    const platformFeeMinor = Number(paymentSplit.platformFeeMinor || 0);
     const paymentIntentData = {
       metadata: {
         bookingId: booking._id.toString(),
@@ -134,11 +158,19 @@ const createCheckout = async (req, res) => {
         explorerId: (req.user?._id || req.user?.id)?.toString(),
         hostId: exp.host?.toString?.() || exp.host?.toString?.(),
         isServiceFee: isServiceFee ? "true" : "false",
+        hostFeeMode: paymentSplit.modeApplied,
+        platformFeeMinor: String(platformFeeMinor),
+        estimatedStripeFeeMinor: String(paymentSplit.estimatedStripeFeeMinor || 0),
+        hostNetAmountMinor: String(paymentSplit.hostNetAmountMinor || 0),
       },
     };
     if (!isServiceFee) {
       paymentIntentData.transfer_data = { destination: host.stripeAccountId };
-      paymentIntentData.application_fee_amount = platformFeeMinor;
+      if (paymentSplit.modeApplied === HOST_FEE_MODES.HOST_PAYS_STRIPE) {
+        paymentIntentData.transfer_data.amount = paymentSplit.transferAmountMinor;
+      } else if (platformFeeMinor > 0) {
+        paymentIntentData.application_fee_amount = platformFeeMinor;
+      }
     }
 
     const session = await stripe.checkout.sessions.create({
@@ -182,6 +214,10 @@ const createCheckout = async (req, res) => {
         totalAmount: amount,
         currency: isServiceFee ? depositCurrency : baseCurrency,
         platformFee: platformFeeMinor,
+        hostFeeMode: paymentSplit.modeApplied,
+        transferAmount: Number(paymentSplit.transferAmountMinor || 0),
+        hostNetAmount: Number(paymentSplit.hostNetAmountMinor || 0),
+        estimatedStripeFee: Number(paymentSplit.estimatedStripeFeeMinor || 0),
         paymentType: isServiceFee ? "SERVICE_FEE" : "PAID_BOOKING",
         analytics: {
           anonymousId: analyticsContext.anonymousId,
@@ -215,6 +251,9 @@ const createCheckout = async (req, res) => {
         quantity: seatQty,
         checkoutQuantity,
         isServiceFee,
+        hostFeeMode: paymentSplit.modeApplied,
+        platformFeeMinor,
+        estimatedStripeFeeMinor: Number(paymentSplit.estimatedStripeFeeMinor || 0),
       },
     });
 

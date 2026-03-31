@@ -19,6 +19,14 @@ const paymentSchema = new mongoose.Schema(
     livadaiFee: { type: Number },
     hostShare: { type: Number },
     platformFee: { type: Number },
+    hostFeeMode: {
+      type: String,
+      enum: ["STANDARD", "HOST_PAYS_STRIPE"],
+      default: "STANDARD",
+    },
+    transferAmount: { type: Number },
+    hostNetAmount: { type: Number },
+    estimatedStripeFee: { type: Number },
     paymentType: { type: String, enum: ["PAID_BOOKING", "DEPOSIT", "SERVICE_FEE"], default: "PAID_BOOKING" },
     analytics: {
       anonymousId: { type: String, default: "" },
