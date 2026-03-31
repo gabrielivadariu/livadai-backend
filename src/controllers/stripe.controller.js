@@ -61,19 +61,14 @@ const listAllConnectedAccounts = async ({ maxPages = 20, limit = 100 } = {}) => 
   return rows;
 };
 
-const scoreAccountCandidate = (account, userId, userEmail) => {
+const scoreAccountCandidate = (account, userId) => {
   const metadata = account?.metadata && typeof account.metadata === "object" ? account.metadata : {};
   const ownerId = String(metadata.livadaiUserId || "").trim();
-  const ownerEmail = String(metadata.livadaiUserEmail || "").trim().toLowerCase();
-  const accountEmail = String(account?.email || "").trim().toLowerCase();
-  const normalizedUserEmail = String(userEmail || "").trim().toLowerCase();
-
-  if (ownerId && ownerId !== String(userId)) return -1;
+  if (!ownerId) return -1;
+  if (ownerId !== String(userId)) return -1;
 
   let score = 0;
-  if (ownerId && ownerId === String(userId)) score += 100;
-  if (ownerEmail && normalizedUserEmail && ownerEmail === normalizedUserEmail) score += 70;
-  if (accountEmail && normalizedUserEmail && accountEmail === normalizedUserEmail) score += 40;
+  score += 100;
   if (account?.details_submitted) score += 25;
   if (account?.charges_enabled) score += 20;
   if (account?.payouts_enabled) score += 20;
@@ -88,7 +83,7 @@ const findReusableStripeAccountForUser = async (user) => {
   const candidates = connectedAccounts
     .map((account) => ({
       account,
-      score: scoreAccountCandidate(account, user?._id, user?.email),
+      score: scoreAccountCandidate(account, user?._id),
     }))
     .filter((row) => row.score > 0)
     .sort((a, b) => {
@@ -105,7 +100,7 @@ const findReusableStripeAccountForUser = async (user) => {
       await ensureStripeAccountUniqueness(accountId, user._id);
       return {
         accountId,
-        source: row.score >= 100 ? "metadata_owner" : "email_match",
+        source: "metadata_owner",
       };
     } catch (err) {
       if (err?.code === "STRIPE_ACCOUNT_ALREADY_LINKED") {
