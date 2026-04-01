@@ -17,6 +17,7 @@ const { trackServerEvent } = require("../utils/analytics");
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 5;
 const AUTH_REFRESH_MAX_EXPIRED_SEC = Number(process.env.AUTH_REFRESH_MAX_EXPIRED_SEC || 14 * 24 * 60 * 60);
+const EMAIL_VERIFICATION_WINDOW_MINUTES = 15;
 const loginAttempts = new Map();
 
 const getBearerToken = (req) => {
@@ -107,13 +108,13 @@ const signToken = (user) => {
   );
 };
 
-const sendEmailVerification = async (user) => {
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  user.emailVerificationCode = otp;
-  user.emailVerificationExpires = new Date(Date.now() + 15 * 60 * 1000);
-  user.emailVerificationAttempts = 0;
-  await user.save();
-  const html = buildEmailVerificationEmail({ code: otp, expiresMinutes: 15 });
+const createEmailVerificationState = () => ({
+  code: Math.floor(100000 + Math.random() * 900000).toString(),
+  expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_WINDOW_MINUTES * 60 * 1000),
+});
+
+const sendEmailVerificationCode = async (user, code) => {
+  const html = buildEmailVerificationEmail({ code, expiresMinutes: EMAIL_VERIFICATION_WINDOW_MINUTES });
   try {
     await sendEmail({
       to: user.email,
@@ -125,6 +126,33 @@ const sendEmailVerification = async (user) => {
   } catch (err) {
     console.error("Send verification email error", err);
   }
+};
+
+const queueWelcomeEmail = (user) => {
+  Promise.resolve()
+    .then(async () => {
+      const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+      const html = buildWelcomeEmail({ ctaUrl: appUrl });
+      await sendEmail({
+        to: user.email,
+        subject: "Bine ai venit / Welcome – LIVADAI",
+        html,
+        type: "welcome_explorer",
+        userId: user._id,
+      });
+    })
+    .catch((err) => {
+      console.error("Welcome email error", err);
+    });
+};
+
+const sendEmailVerification = async (user) => {
+  const verificationState = createEmailVerificationState();
+  user.emailVerificationCode = verificationState.code;
+  user.emailVerificationExpires = verificationState.expiresAt;
+  user.emailVerificationAttempts = 0;
+  await user.save();
+  await sendEmailVerificationCode(user, verificationState.code);
 };
 
 const register = async (req, res) => {
@@ -164,6 +192,7 @@ const register = async (req, res) => {
     }
 
     const hashed = await bcrypt.hash(password, 10);
+    const verificationState = createEmailVerificationState();
     const user = await User.create({
       name,
       email,
@@ -175,6 +204,9 @@ const register = async (req, res) => {
       termsAccepted: true,
       termsAcceptedAt: acceptedAt,
       termsVersion,
+      emailVerificationCode: verificationState.code,
+      emailVerificationExpires: verificationState.expiresAt,
+      emailVerificationAttempts: 0,
       emailVerified: false,
     });
 
@@ -199,23 +231,10 @@ const register = async (req, res) => {
       });
     }
 
-    sendEmailVerification(user).catch((err) => {
+    sendEmailVerificationCode(user, verificationState.code).catch((err) => {
       console.error("Send verification email error:", err?.message || err);
     });
-
-    try {
-      const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
-      const html = buildWelcomeEmail({ ctaUrl: appUrl });
-      await sendEmail({
-        to: user.email,
-        subject: "Bine ai venit / Welcome – LIVADAI",
-        html,
-        type: "welcome_explorer",
-        userId: user._id,
-      });
-    } catch (err) {
-      console.error("Welcome email error", err);
-    }
+    queueWelcomeEmail(user);
 
     return res.status(201).json({
       message: "User created, verification required",
