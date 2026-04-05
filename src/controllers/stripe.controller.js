@@ -68,6 +68,46 @@ const buildStripeOnboardingUrls = (req) => {
   };
 };
 
+const refreshUserStripeStatus = async (user) => {
+  const stripeAccountId = String(user?.stripeAccountId || "").trim();
+  const localStatus = {
+    stripeAccountId: stripeAccountId || null,
+    isStripeChargesEnabled: !!user?.isStripeChargesEnabled,
+    isStripePayoutsEnabled: !!user?.isStripePayoutsEnabled,
+    isStripeDetailsSubmitted: !!user?.isStripeDetailsSubmitted,
+  };
+
+  if (!user || !stripeAccountId) {
+    return localStatus;
+  }
+
+  try {
+    const account = await stripe.accounts.retrieve(stripeAccountId);
+    const liveStatus = {
+      stripeAccountId,
+      isStripeChargesEnabled: !!account?.charges_enabled,
+      isStripePayoutsEnabled: !!account?.payouts_enabled,
+      isStripeDetailsSubmitted: !!account?.details_submitted,
+    };
+
+    if (
+      user.isStripeChargesEnabled !== liveStatus.isStripeChargesEnabled ||
+      user.isStripePayoutsEnabled !== liveStatus.isStripePayoutsEnabled ||
+      user.isStripeDetailsSubmitted !== liveStatus.isStripeDetailsSubmitted
+    ) {
+      user.isStripeChargesEnabled = liveStatus.isStripeChargesEnabled;
+      user.isStripePayoutsEnabled = liveStatus.isStripePayoutsEnabled;
+      user.isStripeDetailsSubmitted = liveStatus.isStripeDetailsSubmitted;
+      await user.save();
+    }
+
+    return liveStatus;
+  } catch (err) {
+    console.error("Refresh Stripe status error", err?.message || err);
+    return localStatus;
+  }
+};
+
 const ensureStripeAccountUniqueness = async (accountId, userId) => {
   const existing = await User.findOne({
     stripeAccountId: String(accountId || "").trim(),
@@ -314,13 +354,14 @@ const createCheckout = async (req, res) => {
 const walletBalance = async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
-    if (!user?.stripeAccountId) {
+    const stripeStatus = await refreshUserStripeStatus(user);
+    if (!stripeStatus.stripeAccountId) {
         return res.status(400).json({ code: "STRIPE_NOT_CONNECTED", message: "Stripe account not connected" });
     }
-    if (!user.isStripeChargesEnabled) {
+    if (!stripeStatus.isStripePayoutsEnabled) {
         return res.status(400).json({ code: "STRIPE_NOT_READY", message: "Stripe account not ready" });
     }
-    const balance = await stripe.balance.retrieve({ stripeAccount: user.stripeAccountId });
+    const balance = await stripe.balance.retrieve({ stripeAccount: stripeStatus.stripeAccountId });
     const available = (balance.available || []).filter((b) => b.currency === "ron").reduce((s, b) => s + b.amount, 0);
     const pending = (balance.pending || []).filter((b) => b.currency === "ron").reduce((s, b) => s + b.amount, 0);
     return res.json({ available, pending, currency: "ron" });
@@ -334,10 +375,11 @@ const walletBalance = async (req, res) => {
 const walletTransactions = async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
-    if (!user?.stripeAccountId) {
+    const stripeStatus = await refreshUserStripeStatus(user);
+    if (!stripeStatus.stripeAccountId) {
       return res.status(400).json({ code: "STRIPE_NOT_CONNECTED", message: "Stripe account not connected" });
     }
-    if (!user.isStripeChargesEnabled) {
+    if (!stripeStatus.isStripeChargesEnabled) {
       return res.status(400).json({ code: "STRIPE_NOT_READY", message: "Stripe account not ready" });
     }
     const txs = await Transaction.find({ user: req.user.id }).sort({ createdAt: -1 }).limit(50);
@@ -352,22 +394,16 @@ const walletTransactions = async (req, res) => {
 const debugHostStatus = async (req, res) => {
   const user = await User.findById(req.user.id);
   if (!user) return res.status(404).json({ message: "User not found" });
+  const stripeStatus = await refreshUserStripeStatus(user);
   const summary = {
-    stripeAccountId: user.stripeAccountId || null,
-    isStripeChargesEnabled: !!user.isStripeChargesEnabled,
-    isStripePayoutsEnabled: !!user.isStripePayoutsEnabled,
-    isStripeDetailsSubmitted: !!user.isStripeDetailsSubmitted,
+    stripeAccountId: stripeStatus.stripeAccountId,
+    isStripeChargesEnabled: stripeStatus.isStripeChargesEnabled,
+    isStripePayoutsEnabled: stripeStatus.isStripePayoutsEnabled,
+    isStripeDetailsSubmitted: stripeStatus.isStripeDetailsSubmitted,
+    charges_enabled: stripeStatus.isStripeChargesEnabled,
+    payouts_enabled: stripeStatus.isStripePayoutsEnabled,
+    details_submitted: stripeStatus.isStripeDetailsSubmitted,
   };
-  if (user.stripeAccountId) {
-    try {
-      const acct = await stripe.accounts.retrieve(user.stripeAccountId);
-      summary.charges_enabled = !!acct?.charges_enabled;
-      summary.payouts_enabled = !!acct?.payouts_enabled;
-      summary.details_submitted = !!acct?.details_submitted;
-    } catch (err) {
-      console.error("Debug host status: cannot retrieve account", err?.message || err);
-    }
-  }
   return res.json(summary);
 };
 

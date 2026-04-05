@@ -699,8 +699,20 @@ const serializeAdminComplianceHost = (user, snapshot = null) => {
   const bankLast4 = String(snapshot?.bankLast4 || "");
   const bankName = String(snapshot?.bankName || "");
   const bankReference = bankLast4 ? `${bankName || "Bank"} • ****${bankLast4}` : "";
+  const stripeStatus = snapshot
+    ? {
+        isStripeChargesEnabled: !!snapshot.isStripeChargesEnabled,
+        isStripePayoutsEnabled: !!snapshot.isStripePayoutsEnabled,
+        isStripeDetailsSubmitted: !!snapshot.isStripeDetailsSubmitted,
+      }
+    : {
+        isStripeChargesEnabled: base.isStripeChargesEnabled,
+        isStripePayoutsEnabled: base.isStripePayoutsEnabled,
+        isStripeDetailsSubmitted: base.isStripeDetailsSubmitted,
+      };
   return {
     ...base,
+    ...stripeStatus,
     livadaiName: base.name || "",
     stripeLegalName: String(snapshot?.stripeLegalName || ""),
     stripeDisplayName: String(snapshot?.stripeDisplayName || ""),
