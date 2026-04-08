@@ -51,8 +51,16 @@ const adminBookingFinalStatuses = ["CANCELLED", "REFUNDED", "COMPLETED", "AUTO_C
 const adminRateLimitState = new Map();
 const ADMIN_RATE_LIMIT_WINDOW_MS = Number(process.env.ADMIN_RATE_LIMIT_WINDOW_MS || 60_000);
 const ADMIN_RATE_LIMIT_MAX = Number(process.env.ADMIN_RATE_LIMIT_MAX || 240);
+const ADMIN_HOST_COMPLIANCE_RESYNC_COOLDOWN_MS = Number(process.env.ADMIN_HOST_COMPLIANCE_RESYNC_COOLDOWN_MS || 60_000);
 const hasOwnerWrite = (role) => hasAdminCapability(role, ADMIN_CAPABILITIES.OWNER_WRITE);
 const HOST_FEE_POLICY_SAMPLE_AMOUNT_MINOR = 100 * 100;
+const ADMIN_HOST_COMPLIANCE_BLOCKING_ISSUES = new Set([
+  "STRIPE_DISABLED",
+  "STRIPE_REQUIREMENTS_DUE",
+  "STRIPE_DETAILS_INCOMPLETE",
+  "STRIPE_CHARGES_DISABLED",
+  "STRIPE_PAYOUTS_DISABLED",
+]);
 
 const hasExperienceMedia = (exp) =>
   !!(
@@ -800,6 +808,46 @@ const getLatestHostComplianceMap = async (userIds = []) => {
   return new Map(rows.map((row) => [String(row.user), row]));
 };
 
+const getHostComplianceSnapshotAgeMs = (snapshot) => {
+  const createdAt = snapshot?.createdAt ? new Date(snapshot.createdAt) : null;
+  if (!createdAt || Number.isNaN(createdAt.getTime())) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Date.now() - createdAt.getTime());
+};
+
+const hasBlockingStripeComplianceIssues = (snapshot) =>
+  collectComplianceIssues(snapshot).some((issue) => ADMIN_HOST_COMPLIANCE_BLOCKING_ISSUES.has(issue));
+
+const shouldSyncAdminComplianceSnapshot = (user, snapshot, { force = false } = {}) => {
+  const stripeAccountId = String(user?.stripeAccountId || "").trim();
+  if (!stripeAccountId) return false;
+  if (force || !snapshot) return true;
+
+  const snapshotStripeAccountId = String(snapshot?.stripeAccountId || "").trim();
+  if (snapshotStripeAccountId && snapshotStripeAccountId !== stripeAccountId) return true;
+
+  const stripeAccessStatus = String(snapshot?.metadata?.stripeAccessStatus || "").trim().toUpperCase();
+  if (stripeAccessStatus === "INACCESSIBLE" && snapshotStripeAccountId === stripeAccountId) return false;
+
+  const hasStripeName = String(snapshot?.stripeLegalName || snapshot?.stripeDisplayName || "").trim();
+  const hasBankRef = String(snapshot?.bankLast4 || "").trim();
+  if (!hasStripeName || !hasBankRef) return true;
+
+  const flagsMismatch =
+    !!user?.isStripeChargesEnabled !== !!snapshot?.isStripeChargesEnabled ||
+    !!user?.isStripePayoutsEnabled !== !!snapshot?.isStripePayoutsEnabled ||
+    !!user?.isStripeDetailsSubmitted !== !!snapshot?.isStripeDetailsSubmitted;
+  if (flagsMismatch) return true;
+
+  if (
+    hasBlockingStripeComplianceIssues(snapshot) &&
+    getHostComplianceSnapshotAgeMs(snapshot) >= ADMIN_HOST_COMPLIANCE_RESYNC_COOLDOWN_MS
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
 const syncHostComplianceSnapshotSafe = async (userId, triggerEventType = "") => {
   if (!userId) return { snapshot: null, error: "Missing user id" };
   try {
@@ -850,20 +898,7 @@ const ensureComplianceMapHasStripeData = async (rows = [], complianceMap = new M
     const id = String(row?._id || "");
     if (!id || !row?.stripeAccountId) continue;
     const existingSnapshot = map.get(id);
-    const hasStripeName = String(existingSnapshot?.stripeLegalName || existingSnapshot?.stripeDisplayName || "").trim();
-    const hasBankRef = String(existingSnapshot?.bankLast4 || "").trim();
-    const stripeAccessStatus = String(existingSnapshot?.metadata?.stripeAccessStatus || "").trim().toUpperCase();
-    const snapshotStripeAccountId = String(existingSnapshot?.stripeAccountId || "").trim();
-    const currentStripeAccountId = String(row?.stripeAccountId || "").trim();
-    if (
-      existingSnapshot &&
-      stripeAccessStatus === "INACCESSIBLE" &&
-      snapshotStripeAccountId &&
-      snapshotStripeAccountId === currentStripeAccountId
-    ) {
-      continue;
-    }
-    if (existingSnapshot && hasStripeName && hasBankRef) continue;
+    if (!shouldSyncAdminComplianceSnapshot(row, existingSnapshot)) continue;
 
     const synced = await syncHostComplianceSnapshotSafe(row._id, triggerEventType || "admin.hosts.list");
     if (synced?.snapshot) map.set(id, synced.snapshot);
@@ -1800,7 +1835,7 @@ router.get("/hosts/:id", async (req, res) => {
     const now = new Date();
     let complianceSyncWarning = "";
     let complianceSnapshot = await HostComplianceSnapshot.findOne({ user: hostObjectId }).sort({ createdAt: -1 }).lean();
-    if (host.stripeAccountId && (!complianceSnapshot || forceSync)) {
+    if (shouldSyncAdminComplianceSnapshot(host, complianceSnapshot, { force: forceSync })) {
       const syncResult = await syncHostComplianceSnapshotSafe(
         hostObjectId,
         forceSync ? "admin.hosts.details.force_sync" : "admin.hosts.details"
