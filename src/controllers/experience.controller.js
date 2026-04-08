@@ -838,7 +838,7 @@ const cancelExperience = async (req, res) => {
 
     const bookings = await Booking.find({ experience: exp._id }).populate("explorer", "email name displayName");
     const hostUser = await User.findById(exp.host).select("email name displayName");
-    const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+    const appUrl = process.env.FRONTEND_URL || "https://www.livadai.com";
     const exploreUrl = `${appUrl.replace(/\/$/, "")}/experiences`;
 
     const resolveLanguage = (user) => {

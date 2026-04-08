@@ -18,7 +18,7 @@ const setupReminderJob = () => {
       }).select("_id title host startsAt reminderHostSent");
 
       for (const exp of exps) {
-        const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+        const appUrl = process.env.FRONTEND_URL || "https://www.livadai.com";
         const explorerBookingsUrl = `${appUrl.replace(/\/$/, "")}/my-activities`;
         const hostBookingsUrl = `${appUrl.replace(/\/$/, "")}/profile`;
         // Host reminder (only once)

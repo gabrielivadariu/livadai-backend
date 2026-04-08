@@ -63,8 +63,8 @@ const resolveReplyTo = ({ type, replyTo }) => {
 };
 
 const buildFooterHtml = () => {
-  const termsUrl = process.env.TERMS_URL || "https://livadai.com/terms";
-  const privacyUrl = process.env.PRIVACY_URL || "https://livadai.com/privacy";
+  const termsUrl = process.env.TERMS_URL || "https://www.livadai.com/terms";
+  const privacyUrl = process.env.PRIVACY_URL || "https://www.livadai.com/privacy";
   return `
     ${FOOTER_MARKER}
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:12px;color:#94a3b8;">

@@ -121,7 +121,7 @@ const createCheckout = async (req, res) => {
       });
     }
 
-    const baseUrl = process.env.FRONTEND_URL || process.env.APP_URL || "https://app.livadai.com";
+    const baseUrl = process.env.FRONTEND_URL || process.env.APP_URL || "https://www.livadai.com";
     const appScheme = process.env.APP_DEEP_LINK_SCHEME || "livadaiapp";
     const successUrl = req.body?.returnToApp
       ? `${appScheme}://payment-success?session_id={CHECKOUT_SESSION_ID}`
@@ -409,7 +409,7 @@ const handlePaymentSuccess = async ({ bookingId, paymentIntentId, sessionId, isD
   try {
     const explorer = await User.findById(booking.explorer);
     const host = await User.findById(booking.host);
-    const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+    const appUrl = process.env.FRONTEND_URL || "https://www.livadai.com";
     const explorerBookingsLink = `${appUrl.replace(/\/$/, "")}/my-activities`;
     const hostBookingsLink = `${appUrl.replace(/\/$/, "")}/profile`;
 

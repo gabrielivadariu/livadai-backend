@@ -77,7 +77,7 @@ const setupAttendanceJob = () => {
               try {
                 const hostUser = await User.findById(bk.experience.host).select("email");
                 if (hostUser?.email) {
-                  const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+                  const appUrl = process.env.FRONTEND_URL || "https://www.livadai.com";
                   const hostBookingsUrl = `${appUrl.replace(/\/$/, "")}/host/bookings`;
                   const dateLabel = formatExperienceDate(bk.experience);
                   const html = buildAttendanceReminderEmail({

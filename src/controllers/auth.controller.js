@@ -131,7 +131,7 @@ const sendEmailVerificationCode = async (user, code) => {
 const queueWelcomeEmail = (user) => {
   Promise.resolve()
     .then(async () => {
-      const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+      const appUrl = process.env.FRONTEND_URL || "https://www.livadai.com";
       const html = buildWelcomeEmail({ ctaUrl: appUrl });
       await sendEmail({
         to: user.email,
@@ -320,7 +320,7 @@ const forgotPassword = async (req, res) => {
     await user.save();
 
     // send email
-    const frontendUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+    const frontendUrl = process.env.FRONTEND_URL || "https://www.livadai.com";
     const normalizedFront = frontendUrl.replace(/\/$/, "");
     const resetLink = `${normalizedFront}/reset-password?token=${token}`;
     const html = buildPasswordResetEmail({ resetUrl: resetLink });

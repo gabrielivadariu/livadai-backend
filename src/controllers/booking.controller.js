@@ -401,7 +401,7 @@ const cancelBookingByHost = async (req, res) => {
     try {
       const explorer = await User.findById(booking.explorer).select("email name displayName");
       if (explorer?.email && exp) {
-        const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+        const appUrl = process.env.FRONTEND_URL || "https://www.livadai.com";
         const exploreUrl = `${appUrl.replace(/\/$/, "")}/my-activities`;
         const dateLabel = formatExperienceDate(exp);
         const html = buildBookingCancelledEmail({

@@ -980,7 +980,7 @@ const applyDisableExperience = async (experienceId) => {
     status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"] },
   }).populate("explorer", "email name displayName");
   const hostUser = await User.findById(exp.host).select("email name displayName");
-  const appUrl = process.env.FRONTEND_URL || "https://app.livadai.com";
+  const appUrl = process.env.FRONTEND_URL || "https://www.livadai.com";
   const exploreUrl = `${appUrl.replace(/\/$/, "")}/experiences`;
   for (const b of bookings) {
     await refundBooking(b, "Experience disabled by admin");
