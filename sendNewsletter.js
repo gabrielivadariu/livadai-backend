@@ -14,6 +14,27 @@ const { buildMarketingExperienceEmail } = require("./src/utils/emailTemplates");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const randomBatchDelayMs = () => 1000 + Math.floor(Math.random() * 1001);
 
+const getMailTransportMode = () => {
+  if (process.env.RESEND_API_KEY) return "resend";
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && process.env.SMTP_PORT) {
+    return "smtp";
+  }
+  return "console-fallback";
+};
+
+const logRunContext = () => {
+  const transportMode = getMailTransportMode();
+  console.log("Newsletter configuration");
+  console.log(`- TEST_MODE: ${TEST_MODE ? "true" : "false"}`);
+  console.log(`- transport: ${transportMode}`);
+  console.log(`- from: ${FROM_EMAIL}`);
+  console.log(`- reply-to: ${REPLY_TO_EMAIL}`);
+  console.log(`- EMAILS_ENABLED: ${process.env.EMAILS_ENABLED === undefined ? "(unset)" : process.env.EMAILS_ENABLED}`);
+  if (transportMode === "console-fallback") {
+    console.log("WARNING: No RESEND_API_KEY or SMTP config detected. The script will only log the email content.");
+  }
+};
+
 const newsletterContent = {
   introText:
     "Salut 👋\n\nDin când în când, îți trimitem doar ce merită.\nExperiențe reale, oameni faini și locuri care nu se uită după două poze.\n\nUite 3 experiențe care te pot scoate din rutină 👇",
@@ -107,6 +128,7 @@ const sendBatch = async (batch, batchIndex, totalBatches) => {
 };
 
 const main = async () => {
+  logRunContext();
   const recipients = TEST_MODE ? getTestRecipients() : await loadEligibleRecipients();
 
   if (!recipients.length) {
