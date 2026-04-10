@@ -209,3 +209,4 @@ const sendEmail = async ({ to, subject, html, type, from, replyTo, userId }) => 
 exports.sendEmail = sendEmail;
 exports.buildBrandedEmail = buildBrandedEmail;
 exports.ensureFooter = ensureFooter;
+exports.FOOTER_MARKER = FOOTER_MARKER;

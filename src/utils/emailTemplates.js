@@ -1,6 +1,30 @@
-const { buildBrandedEmail } = require("./mailer");
+const { buildBrandedEmail, FOOTER_MARKER } = require("./mailer");
 const PRIMARY = "#00bcd4";
 const ACCENT = "#16a34a";
+const DEEP_TEXT = "#0f172a";
+const MUTED_TEXT = "#475569";
+const SURFACE = "#ffffff";
+const SOFT_SURFACE = "#f4fbfd";
+
+const escapeHtml = (value = "") =>
+  String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const renderPlainTextParagraphs = (value = "", { color = MUTED_TEXT, fontSize = 15, lineHeight = 1.7 } = {}) => {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  return text
+    .split(/\n{2,}/)
+    .map((part) => {
+      const html = escapeHtml(part).replace(/\n/g, "<br />");
+      return `<p style="margin:0 0 14px 0;font-size:${fontSize}px;line-height:${lineHeight};color:${color};">${html}</p>`;
+    })
+    .join("");
+};
 
 const formatExperienceDate = (exp) => {
   const startDate = exp?.startsAt || exp?.startDate || exp?.date;
@@ -424,74 +448,171 @@ const buildMarketingExperienceEmail = ({
   unsubscribeUrl,
   testingNotice,
   footerText,
+  logoUrl,
 }) => {
-  const safeTitle = title || "Discover something worth leaving home for";
-  const safeIntro =
-    introText || "From time to time, we send a small selection of LIVADAI experiences worth opening.";
-  const safeExperienceTitle = experienceTitle || "Featured experience";
+  const frontendBaseUrl = String(process.env.FRONTEND_URL || process.env.APP_URL || "https://www.livadai.com").replace(/\/$/, "");
+  const safeTitle = escapeHtml(title || "Descoperă ceva care merită trăit");
+  const safeIntro = introText || "Din când în când, îți trimitem doar ce merită.";
+  const safeExperienceTitle = escapeHtml(experienceTitle || "Experiență recomandată");
   const safeExperienceSummary =
-    experienceSummary || "A place with soul, real people, and an experience that feels worth your time.";
+    experienceSummary || "Locuri cu suflet, oameni reali și experiențe care rămân cu tine.";
   const secondaryItems = Array.isArray(secondaryExperiences) ? secondaryExperiences.filter(Boolean).slice(0, 2) : [];
-  const footerParts = [
-    footerText || "You are receiving this email because you opted in to LIVADAI updates.",
-  ];
-  if (unsubscribeUrl) {
-    footerParts.push(
-      `<a href="${unsubscribeUrl}" style="color:${PRIMARY};text-decoration:none;font-weight:700;">Unsubscribe</a>`
-    );
-  }
+  const safeCtaLabel = escapeHtml(ctaLabel || "Descoperă toate experiențele");
+  const safeCtaUrl = escapeHtml(ctaUrl || frontendBaseUrl);
+  const safeUnsubscribeUrl = unsubscribeUrl ? escapeHtml(unsubscribeUrl) : "";
+  const safeLogoUrl = escapeHtml(logoUrl || `${frontendBaseUrl}/email/livadai-logo.png`);
+  const safeFooterText = escapeHtml(
+    footerText || "Primești acest email pentru că ai ales să primești noutăți LIVADAI. Te poți dezabona oricând."
+  );
+  const supportEmail = escapeHtml(process.env.SUPPORT_EMAIL || "support@livadai.com");
+  const termsUrl = escapeHtml(process.env.TERMS_URL || `${frontendBaseUrl}/terms`);
+  const privacyUrl = escapeHtml(process.env.PRIVACY_URL || `${frontendBaseUrl}/privacy`);
 
-  const bodyHtml = `
-    ${
-      testingNotice
-        ? `
-    <div style="margin:0 0 18px 0;padding:14px 16px;border-radius:14px;background:#ecfeff;border:1px solid #bae6fd;color:#0f172a;font-size:14px;line-height:1.6;">
-      ${testingNotice}
+  return `
+    <div style="margin:0;padding:0;background:#edf7fb;font-family:Arial,'Helvetica Neue',sans-serif;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#edf7fb;">
+        <tr>
+          <td align="center" style="padding:28px 12px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;margin:0 auto;">
+              <tr>
+                <td style="height:8px;background:${PRIMARY};border-radius:24px 24px 0 0;font-size:0;line-height:0;">&nbsp;</td>
+              </tr>
+              <tr>
+                <td style="background:${SURFACE};border:1px solid #dbeaf0;border-top:0;border-radius:0 0 28px 28px;overflow:hidden;box-shadow:0 18px 40px rgba(15,23,42,0.08);">
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td style="padding:24px 24px 18px;background:${SOFT_SURFACE};border-bottom:1px solid #e2eef4;">
+                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                          <tr>
+                            <td width="72" valign="middle" style="width:72px;padding-right:14px;">
+                              <img src="${safeLogoUrl}" alt="LIVADAI" width="58" height="58" style="display:block;width:58px;height:58px;border-radius:18px;border:0;outline:none;text-decoration:none;box-shadow:0 8px 22px rgba(0,188,212,0.18);" />
+                            </td>
+                            <td valign="middle">
+                              <div style="font-size:11px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:#0f6b79;margin-bottom:6px;">Curated by LIVADAI</div>
+                              <div style="font-size:28px;line-height:1;font-weight:900;color:${DEEP_TEXT};margin:0;">LIVADAI</div>
+                              <div style="font-size:14px;line-height:1.5;color:#0f6b79;margin-top:6px;">Experiențe reale, oameni faini, locuri cu suflet.</div>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="padding:24px;">
+                        ${
+                          testingNotice
+                            ? `
+                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 18px 0;">
+                          <tr>
+                            <td style="padding:12px 14px;border-radius:16px;background:#f0fdff;border:1px solid #b7edf5;color:${DEEP_TEXT};font-size:13px;line-height:1.6;">
+                              ${escapeHtml(testingNotice)}
+                            </td>
+                          </tr>
+                        </table>
+                        `
+                            : ""
+                        }
+
+                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 18px 0;">
+                          <tr>
+                            <td style="padding:24px 22px;border-radius:24px;background:${SOFT_SURFACE};border:1px solid #d9eef4;">
+                              <div style="font-size:11px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:#0f6b79;margin-bottom:10px;">Selecție LIVADAI</div>
+                              <h1 style="margin:0 0 14px 0;font-size:30px;line-height:1.12;font-weight:900;color:${DEEP_TEXT};">${safeTitle}</h1>
+                              ${renderPlainTextParagraphs(safeIntro)}
+                            </td>
+                          </tr>
+                        </table>
+
+                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 18px 0;">
+                          <tr>
+                            <td style="padding:22px;border-radius:24px;background:${SURFACE};border:1px solid #d7eaef;">
+                              <div style="font-size:11px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:${PRIMARY};margin-bottom:10px;">Experiența principală</div>
+                              <div style="font-size:26px;line-height:1.15;font-weight:900;color:${DEEP_TEXT};margin-bottom:10px;">${safeExperienceTitle}</div>
+                              ${renderPlainTextParagraphs(safeExperienceSummary, { color: MUTED_TEXT, fontSize: 15, lineHeight: 1.75 })}
+                              <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:18px;">
+                                <tr>
+                                  <td style="border-radius:999px;background:${PRIMARY};">
+                                    <a href="${safeCtaUrl}" style="display:inline-block;padding:14px 22px;color:#ffffff;text-decoration:none;font-size:15px;font-weight:800;letter-spacing:0.01em;">${safeCtaLabel}</a>
+                                  </td>
+                                </tr>
+                              </table>
+                            </td>
+                          </tr>
+                        </table>
+
+                        ${
+                          secondaryItems.length
+                            ? `
+                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 18px 0;">
+                          <tr>
+                            <td style="padding:0 0 12px 0;font-size:11px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:#64748b;">
+                              Mai poți descoperi și
+                            </td>
+                          </tr>
+                          ${secondaryItems
+                            .map(
+                              (item) => `
+                          <tr>
+                            <td style="padding:0 0 10px 0;">
+                              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                                <tr>
+                                  <td style="padding:16px 18px;border-radius:18px;background:#f8fbfc;border:1px solid #e2edf2;">
+                                    <div style="font-size:18px;line-height:1.25;font-weight:800;color:${DEEP_TEXT};margin-bottom:6px;">${escapeHtml(
+                                      item.title || "Experiență LIVADAI"
+                                    )}</div>
+                                    ${
+                                      item.summary
+                                        ? renderPlainTextParagraphs(item.summary, {
+                                            color: MUTED_TEXT,
+                                            fontSize: 14,
+                                            lineHeight: 1.65,
+                                          })
+                                        : ""
+                                    }
+                                  </td>
+                                </tr>
+                              </table>
+                            </td>
+                          </tr>
+                          `
+                            )
+                            .join("")}
+                        </table>
+                        `
+                            : ""
+                        }
+
+                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                          <tr>
+                            <td style="padding:18px 18px 16px 18px;border-radius:20px;background:#f8fafc;border:1px solid #e2e8f0;">
+                              <div style="font-size:12px;line-height:1.7;color:#64748b;margin-bottom:8px;">${safeFooterText}</div>
+                              ${
+                                safeUnsubscribeUrl
+                                  ? `<div style="font-size:13px;line-height:1.6;color:${DEEP_TEXT};margin-bottom:10px;"><a href="${safeUnsubscribeUrl}" style="color:${PRIMARY};text-decoration:none;font-weight:800;">Dezabonează-te</a></div>`
+                                  : ""
+                              }
+                              <div style="font-size:12px;line-height:1.7;color:#64748b;">
+                                Ai întrebări? Scrie-ne la <a href="mailto:${supportEmail}" style="color:${PRIMARY};text-decoration:none;font-weight:700;">${supportEmail}</a>.
+                              </div>
+                              <div style="font-size:12px;line-height:1.7;color:#94a3b8;margin-top:8px;">
+                                <a href="${termsUrl}" style="color:${PRIMARY};text-decoration:none;">Termeni</a>
+                                &nbsp;·&nbsp;
+                                <a href="${privacyUrl}" style="color:${PRIMARY};text-decoration:none;">Confidențialitate</a>
+                              </div>
+                            </td>
+                          </tr>
+                        </table>
+                        ${FOOTER_MARKER}
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
     </div>
-    `
-        : ""
-    }
-    <div style="margin:0 0 20px 0;padding:18px;border-radius:16px;background:#f8fafc;border:1px solid #e2e8f0;">
-      <div style="font-size:12px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:${PRIMARY};margin-bottom:10px;">Featured on LIVADAI</div>
-      <div style="font-size:20px;font-weight:800;color:#0f172a;margin-bottom:10px;">${safeExperienceTitle}</div>
-      <p style="margin:0;font-size:15px;line-height:1.7;color:#334155;">${safeExperienceSummary}</p>
-    </div>
-    ${
-      secondaryItems.length
-        ? `
-    <div style="margin:0 0 12px 0;">
-      <div style="font-size:13px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;margin-bottom:10px;">Mai poți descoperi și</div>
-      <div style="display:grid;gap:10px;">
-        ${secondaryItems
-          .map(
-            (item) => `
-          <div style="padding:14px 16px;border-radius:14px;background:#ffffff;border:1px solid #e2e8f0;">
-            <div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:4px;">${item.title || "Experiență LIVADAI"}</div>
-            ${
-              item.summary
-                ? `<div style="font-size:14px;line-height:1.6;color:#475569;">${item.summary}</div>`
-                : ""
-            }
-          </div>
-        `
-          )
-          .join("")}
-      </div>
-    </div>
-    `
-        : ""
-    }
   `;
-
-  return buildBrandedEmail({
-    title: safeTitle,
-    intro: safeIntro,
-    bodyHtml,
-    ctaLabel: ctaLabel || "See the experience",
-    ctaUrl,
-    footer: footerParts.join("<br />"),
-    headerSubtitle: "Optional LIVADAI updates",
-  });
 };
 
 module.exports = {

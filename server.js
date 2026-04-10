@@ -22,6 +22,7 @@ const pushRoutes = require("./src/routes/push.routes");
 const unsubscribeRoutes = require("./src/routes/unsubscribe.routes");
 const userRoutes = require("./src/routes/user.routes");
 const adminRoutes = require("./src/routes/admin.routes");
+const adminEmailMarketingRoutes = require("./src/routes/adminEmailMarketing.routes");
 const adminAnalyticsRoutes = require("./src/routes/adminAnalytics.routes");
 const analyticsRoutes = require("./src/routes/analytics.routes");
 const setupReminderJob = require("./src/jobs/reminders");
@@ -63,6 +64,7 @@ app.use("/unsubscribe", unsubscribeRoutes);
 app.use("/users", userRoutes);
 app.use("/analytics", analyticsRoutes);
 app.use("/admin/analytics", adminAnalyticsRoutes);
+app.use("/admin/email-marketing", adminEmailMarketingRoutes);
 app.use("/admin", adminRoutes);
 
 app.use((req, res) => {
