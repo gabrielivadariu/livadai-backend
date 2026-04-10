@@ -82,6 +82,10 @@ const userSchema = new mongoose.Schema(
     termsAccepted: { type: Boolean, default: false },
     termsAcceptedAt: { type: Date },
     termsVersion: { type: String },
+    marketingEmailOptIn: { type: Boolean, default: false },
+    marketingEmailOptInAt: { type: Date },
+    marketingEmailUnsubscribedAt: { type: Date },
+    unsubscribeToken: { type: String },
     favorites: [{ type: mongoose.Schema.Types.ObjectId, ref: "Experience" }],
   },
   { timestamps: true }

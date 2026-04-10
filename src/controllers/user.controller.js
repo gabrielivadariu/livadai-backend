@@ -14,6 +14,7 @@ const {
 const { validatePasswordStrength } = require("../utils/passwordPolicy");
 const { deleteCloudinaryUrls, getCloudinaryInfo } = require("../utils/cloudinary-media");
 const { logMediaDeletion } = require("../utils/mediaDeletionLog");
+const { generateUnsubscribeToken } = require("../utils/marketingEmails");
 
 const buildHistory = async (userId) => {
   const history = await Booking.find({ explorer: userId, status: "COMPLETED" })
@@ -32,10 +33,40 @@ const buildHistory = async (userId) => {
   }));
 };
 
-  const getMeProfile = async (req, res) => {
+const buildPreferencesPayload = (user) => ({
+  marketingEmailOptIn: !!user?.marketingEmailOptIn,
+  marketingEmailOptInAt: user?.marketingEmailOptInAt || null,
+  marketingEmailUnsubscribedAt: user?.marketingEmailUnsubscribedAt || null,
+});
+
+const buildUnsubscribePage = ({ title, message, accentColor = "#00bcd4" }) => `
+  <!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width,initial-scale=1" />
+      <title>${title}</title>
+    </head>
+    <body style="margin:0;background:#f5f7fb;font-family:Arial,sans-serif;color:#0f172a;">
+      <div style="max-width:560px;margin:40px auto;padding:0 16px;">
+        <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:18px;overflow:hidden;box-shadow:0 12px 30px rgba(15,23,42,0.08);">
+          <div style="background:${accentColor};color:#ffffff;text-align:center;padding:20px 16px;">
+            <div style="font-size:24px;font-weight:800;letter-spacing:1px;">LIVADAI</div>
+          </div>
+          <div style="padding:28px 24px;text-align:center;">
+            <h1 style="margin:0 0 12px 0;font-size:24px;line-height:1.2;">${title}</h1>
+            <p style="margin:0;font-size:16px;line-height:1.6;color:#475569;">${message}</p>
+          </div>
+        </div>
+      </div>
+    </body>
+  </html>
+`;
+
+const getMeProfile = async (req, res) => {
   try {
-  const user = await User.findById(req.user.id).select(
-      "name displayName display_name avatar age languages shortBio profilePhoto phoneVerified phone isTrustedParticipant city country"
+    const user = await User.findById(req.user.id).select(
+      "name displayName display_name avatar age languages shortBio profilePhoto phoneVerified phone isTrustedParticipant city country marketingEmailOptIn marketingEmailOptInAt marketingEmailUnsubscribedAt"
     );
     if (!user) return res.status(404).json({ message: "User not found" });
 
@@ -59,7 +90,9 @@ const buildHistory = async (userId) => {
       experiencesCount: completed,
       noShowCount: noShows,
       phoneVerified: !!user.phoneVerified,
+      marketingEmailOptIn: !!user.marketingEmailOptIn,
       history,
+      preferences: buildPreferencesPayload(user),
     });
   } catch (err) {
     console.error("getMeProfile error", err);
@@ -146,7 +179,7 @@ const buildHistory = async (userId) => {
   }
 };
 
-  const getPublicProfile = async (req, res) => {
+const getPublicProfile = async (req, res) => {
   try {
     const userId = req.params.id;
   const user = await User.findById(userId).select(
@@ -212,6 +245,105 @@ const canDeleteAccount = async (user) => {
     }
   }
   return { ok: true };
+};
+
+const updateMePreferences = async (req, res) => {
+  try {
+    const { marketingEmailOptIn } = req.body || {};
+    if (typeof marketingEmailOptIn !== "boolean") {
+      return res.status(400).json({ message: "marketingEmailOptIn must be true or false" });
+    }
+
+    const user = await User.findById(req.user.id).select(
+      "marketingEmailOptIn marketingEmailOptInAt marketingEmailUnsubscribedAt unsubscribeToken"
+    );
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (marketingEmailOptIn) {
+      user.marketingEmailOptIn = true;
+      if (!user.marketingEmailOptInAt) {
+        user.marketingEmailOptInAt = new Date();
+      }
+      if (!user.unsubscribeToken) {
+        user.unsubscribeToken = generateUnsubscribeToken();
+      }
+      user.marketingEmailUnsubscribedAt = undefined;
+    } else {
+      user.marketingEmailOptIn = false;
+      user.marketingEmailUnsubscribedAt = new Date();
+    }
+
+    await user.save();
+
+    return res.json({
+      message: "Preferences updated",
+      marketingEmailOptIn: !!user.marketingEmailOptIn,
+      preferences: buildPreferencesPayload(user),
+    });
+  } catch (err) {
+    console.error("updateMePreferences error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const unsubscribeFromMarketingEmails = async (req, res) => {
+  try {
+    const token = String(req.query?.token || "").trim();
+    if (!token) {
+      return res
+        .status(400)
+        .type("html")
+        .send(
+          buildUnsubscribePage({
+            title: "Invalid unsubscribe link",
+            message: "This unsubscribe link is missing or invalid.",
+            accentColor: "#ef4444",
+          })
+        );
+    }
+
+    const user = await User.findOne({ unsubscribeToken: token }).select(
+      "marketingEmailOptIn marketingEmailUnsubscribedAt"
+    );
+    if (!user) {
+      return res
+        .status(404)
+        .type("html")
+        .send(
+          buildUnsubscribePage({
+            title: "Invalid unsubscribe link",
+            message: "This unsubscribe link is no longer valid.",
+            accentColor: "#ef4444",
+          })
+        );
+    }
+
+    user.marketingEmailOptIn = false;
+    user.marketingEmailUnsubscribedAt = new Date();
+    await user.save();
+
+    return res
+      .status(200)
+      .type("html")
+      .send(
+        buildUnsubscribePage({
+          title: "Unsubscribed",
+          message: "You have been unsubscribed from LIVADAI emails.",
+        })
+      );
+  } catch (err) {
+    console.error("unsubscribeFromMarketingEmails error", err);
+    return res
+      .status(500)
+      .type("html")
+      .send(
+        buildUnsubscribePage({
+          title: "Something went wrong",
+          message: "We could not update your email preferences right now.",
+          accentColor: "#ef4444",
+        })
+      );
+  }
 };
 
 const deleteMe = async (_req, res) => {
@@ -496,6 +628,8 @@ const changeEmail = async (req, res) => {
 module.exports = {
   getMeProfile,
   updateMeProfile,
+  updateMePreferences,
+  unsubscribeFromMarketingEmails,
   getPublicProfile,
   deleteMe,
   requestDeleteOtp,

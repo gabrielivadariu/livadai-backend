@@ -19,6 +19,7 @@ const { router: stripeRouter, webhookRouter } = require("./src/routes/stripe.rou
 const healthRoutes = require("./src/routes/health.routes");
 const reportRoutes = require("./src/routes/report.routes");
 const pushRoutes = require("./src/routes/push.routes");
+const unsubscribeRoutes = require("./src/routes/unsubscribe.routes");
 const userRoutes = require("./src/routes/user.routes");
 const adminRoutes = require("./src/routes/admin.routes");
 const adminAnalyticsRoutes = require("./src/routes/adminAnalytics.routes");
@@ -58,6 +59,7 @@ app.use("/upload", uploadRoutes);
 app.use("/stripe", stripeRouter);
 app.use("/reports", reportRoutes);
 app.use("/push", pushRoutes);
+app.use("/unsubscribe", unsubscribeRoutes);
 app.use("/users", userRoutes);
 app.use("/analytics", analyticsRoutes);
 app.use("/admin/analytics", adminAnalyticsRoutes);

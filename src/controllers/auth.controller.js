@@ -9,6 +9,7 @@ const {
   buildPasswordResetEmail,
   buildPasswordChangedEmail,
 } = require("../utils/emailTemplates");
+const { generateUnsubscribeToken } = require("../utils/marketingEmails");
 const { validatePasswordStrength } = require("../utils/passwordPolicy");
 const { setAuthCookie, clearAuthCookie, getAuthTokenFromCookie } = require("../utils/authCookies");
 const { isAdminRole } = require("../utils/adminRoles");
@@ -157,7 +158,19 @@ const sendEmailVerification = async (user) => {
 
 const register = async (req, res) => {
   try {
-    const { name, email, password, confirmPassword, role, phone, phoneCountryCode, termsAccepted, termsAcceptedAt, termsVersion } = req.body;
+    const {
+      name,
+      email,
+      password,
+      confirmPassword,
+      role,
+      phone,
+      phoneCountryCode,
+      termsAccepted,
+      termsAcceptedAt,
+      termsVersion,
+      marketingEmailOptIn,
+    } = req.body;
     if (!name || !email || !password || !confirmPassword || !phone || !phoneCountryCode) {
       return res.status(400).json({ message: "name, email, password, confirmPassword, phone, phoneCountryCode required" });
     }
@@ -193,6 +206,7 @@ const register = async (req, res) => {
 
     const hashed = await bcrypt.hash(password, 10);
     const verificationState = createEmailVerificationState();
+    const wantsMarketingEmail = marketingEmailOptIn === true;
     const user = await User.create({
       name,
       email,
@@ -208,6 +222,9 @@ const register = async (req, res) => {
       emailVerificationExpires: verificationState.expiresAt,
       emailVerificationAttempts: 0,
       emailVerified: false,
+      marketingEmailOptIn: wantsMarketingEmail,
+      marketingEmailOptInAt: wantsMarketingEmail ? new Date() : undefined,
+      unsubscribeToken: wantsMarketingEmail ? generateUnsubscribeToken() : undefined,
     });
 
     await trackServerEvent({
@@ -245,6 +262,7 @@ const register = async (req, res) => {
         displayName: user.displayName || user.display_name || user.name,
         email: user.email,
         role: user.role,
+        marketingEmailOptIn: !!user.marketingEmailOptIn,
       },
     });
   } catch (err) {
@@ -533,6 +551,7 @@ const buildAuthUser = (user) => ({
   email: user.email,
   role: user.role,
   avatar: user.avatar || user.profilePhoto || "",
+  marketingEmailOptIn: !!user.marketingEmailOptIn,
 });
 
 const refreshSession = async (req, res) => {

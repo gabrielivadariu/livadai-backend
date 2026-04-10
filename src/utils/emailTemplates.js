@@ -413,6 +413,49 @@ const buildRefundCompletedEmail = ({ language, firstName, experienceTitle, amoun
   return { subject, html: body };
 };
 
+const buildMarketingExperienceEmail = ({
+  title,
+  introText,
+  experienceTitle,
+  experienceSummary,
+  ctaLabel,
+  ctaUrl,
+  unsubscribeUrl,
+}) => {
+  const safeTitle = title || "Discover something worth leaving home for";
+  const safeIntro =
+    introText || "From time to time, we send a small selection of LIVADAI experiences worth opening.";
+  const safeExperienceTitle = experienceTitle || "Featured experience";
+  const safeExperienceSummary =
+    experienceSummary || "A place with soul, real people, and an experience that feels worth your time.";
+  const footerParts = [
+    "You are receiving this email because you opted in to LIVADAI updates.",
+  ];
+  if (unsubscribeUrl) {
+    footerParts.push(
+      `<a href="${unsubscribeUrl}" style="color:${PRIMARY};text-decoration:none;font-weight:700;">Unsubscribe</a>`
+    );
+  }
+
+  const bodyHtml = `
+    <div style="margin:0 0 20px 0;padding:18px;border-radius:16px;background:#f8fafc;border:1px solid #e2e8f0;">
+      <div style="font-size:12px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:${PRIMARY};margin-bottom:10px;">Featured on LIVADAI</div>
+      <div style="font-size:20px;font-weight:800;color:#0f172a;margin-bottom:10px;">${safeExperienceTitle}</div>
+      <p style="margin:0;font-size:15px;line-height:1.7;color:#334155;">${safeExperienceSummary}</p>
+    </div>
+  `;
+
+  return buildBrandedEmail({
+    title: safeTitle,
+    intro: safeIntro,
+    bodyHtml,
+    ctaLabel: ctaLabel || "See the experience",
+    ctaUrl,
+    footer: footerParts.join("<br />"),
+    headerSubtitle: "Optional LIVADAI updates",
+  });
+};
+
 module.exports = {
   formatExperienceDate,
   formatExperienceLocation,
@@ -432,4 +475,5 @@ module.exports = {
   buildRefundInitiatedEmail,
   buildExperienceCancelledNoticeEmail,
   buildRefundCompletedEmail,
+  buildMarketingExperienceEmail,
 };
