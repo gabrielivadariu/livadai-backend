@@ -418,9 +418,12 @@ const buildMarketingExperienceEmail = ({
   introText,
   experienceTitle,
   experienceSummary,
+  secondaryExperiences,
   ctaLabel,
   ctaUrl,
   unsubscribeUrl,
+  testingNotice,
+  footerText,
 }) => {
   const safeTitle = title || "Discover something worth leaving home for";
   const safeIntro =
@@ -428,8 +431,9 @@ const buildMarketingExperienceEmail = ({
   const safeExperienceTitle = experienceTitle || "Featured experience";
   const safeExperienceSummary =
     experienceSummary || "A place with soul, real people, and an experience that feels worth your time.";
+  const secondaryItems = Array.isArray(secondaryExperiences) ? secondaryExperiences.filter(Boolean).slice(0, 2) : [];
   const footerParts = [
-    "You are receiving this email because you opted in to LIVADAI updates.",
+    footerText || "You are receiving this email because you opted in to LIVADAI updates.",
   ];
   if (unsubscribeUrl) {
     footerParts.push(
@@ -438,11 +442,45 @@ const buildMarketingExperienceEmail = ({
   }
 
   const bodyHtml = `
+    ${
+      testingNotice
+        ? `
+    <div style="margin:0 0 18px 0;padding:14px 16px;border-radius:14px;background:#ecfeff;border:1px solid #bae6fd;color:#0f172a;font-size:14px;line-height:1.6;">
+      ${testingNotice}
+    </div>
+    `
+        : ""
+    }
     <div style="margin:0 0 20px 0;padding:18px;border-radius:16px;background:#f8fafc;border:1px solid #e2e8f0;">
       <div style="font-size:12px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:${PRIMARY};margin-bottom:10px;">Featured on LIVADAI</div>
       <div style="font-size:20px;font-weight:800;color:#0f172a;margin-bottom:10px;">${safeExperienceTitle}</div>
       <p style="margin:0;font-size:15px;line-height:1.7;color:#334155;">${safeExperienceSummary}</p>
     </div>
+    ${
+      secondaryItems.length
+        ? `
+    <div style="margin:0 0 12px 0;">
+      <div style="font-size:13px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;margin-bottom:10px;">Mai poți descoperi și</div>
+      <div style="display:grid;gap:10px;">
+        ${secondaryItems
+          .map(
+            (item) => `
+          <div style="padding:14px 16px;border-radius:14px;background:#ffffff;border:1px solid #e2e8f0;">
+            <div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:4px;">${item.title || "Experiență LIVADAI"}</div>
+            ${
+              item.summary
+                ? `<div style="font-size:14px;line-height:1.6;color:#475569;">${item.summary}</div>`
+                : ""
+            }
+          </div>
+        `
+          )
+          .join("")}
+      </div>
+    </div>
+    `
+        : ""
+    }
   `;
 
   return buildBrandedEmail({
