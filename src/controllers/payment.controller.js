@@ -157,21 +157,15 @@ const createCheckout = async (req, res) => {
         experienceId: exp._id.toString(),
         explorerId: (req.user?._id || req.user?.id)?.toString(),
         hostId: exp.host?.toString?.() || exp.host?.toString?.(),
+        hostStripeAccountId: host?.stripeAccountId || "",
         isServiceFee: isServiceFee ? "true" : "false",
         hostFeeMode: paymentSplit.modeApplied,
         platformFeeMinor: String(platformFeeMinor),
         estimatedStripeFeeMinor: String(paymentSplit.estimatedStripeFeeMinor || 0),
         hostNetAmountMinor: String(paymentSplit.hostNetAmountMinor || 0),
+        chargeModel: isServiceFee ? "DESTINATION_CHARGE" : "SEPARATE_CHARGE_AND_TRANSFER",
       },
     };
-    if (!isServiceFee) {
-      paymentIntentData.transfer_data = { destination: host.stripeAccountId };
-      if (paymentSplit.modeApplied === HOST_FEE_MODES.HOST_PAYS_STRIPE) {
-        paymentIntentData.transfer_data.amount = paymentSplit.transferAmountMinor;
-      } else if (platformFeeMinor > 0) {
-        paymentIntentData.application_fee_amount = platformFeeMinor;
-      }
-    }
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
@@ -198,6 +192,7 @@ const createCheckout = async (req, res) => {
         pricingMode,
         isDeposit: "false",
         isServiceFee: isServiceFee ? "true" : "false",
+        chargeModel: isServiceFee ? "DESTINATION_CHARGE" : "SEPARATE_CHARGE_AND_TRANSFER",
       },
     });
 
@@ -214,10 +209,12 @@ const createCheckout = async (req, res) => {
         totalAmount: amount,
         currency: isServiceFee ? depositCurrency : baseCurrency,
         platformFee: platformFeeMinor,
+        chargeModel: isServiceFee ? "DESTINATION_CHARGE" : "SEPARATE_CHARGE_AND_TRANSFER",
         hostFeeMode: paymentSplit.modeApplied,
         transferAmount: Number(paymentSplit.transferAmountMinor || 0),
         hostNetAmount: Number(paymentSplit.hostNetAmountMinor || 0),
         estimatedStripeFee: Number(paymentSplit.estimatedStripeFeeMinor || 0),
+        transferStatus: isServiceFee ? "NOT_READY" : "NOT_READY",
         paymentType: isServiceFee ? "SERVICE_FEE" : "PAID_BOOKING",
         analytics: {
           anonymousId: analyticsContext.anonymousId,

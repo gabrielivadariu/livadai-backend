@@ -176,7 +176,8 @@ webhookRouter.post(
           const bookingId = pi.metadata?.bookingId;
           const hostId = pi.metadata?.hostId;
           const explorerId = pi.metadata?.explorerId;
-          const stripeAccountId = pi.transfer_data?.destination || null;
+          const stripeAccountId = pi.metadata?.hostStripeAccountId || pi.transfer_data?.destination || null;
+          const chargeModel = String(pi.metadata?.chargeModel || "");
 
           let payment = null;
           if (paymentIntentId) {
@@ -196,10 +197,14 @@ webhookRouter.post(
             payment.host = payment.host || hostId || payment.host;
             payment.explorer = payment.explorer || explorerId || payment.explorer;
             payment.stripeAccountId = payment.stripeAccountId || stripeAccountId;
+            if (chargeModel) {
+              payment.chargeModel = chargeModel;
+            }
             await payment.save();
           }
 
-          if (hostId) {
+          const resolvedChargeModel = String(payment?.chargeModel || chargeModel || "DESTINATION_CHARGE");
+          if (hostId && resolvedChargeModel !== "SEPARATE_CHARGE_AND_TRANSFER") {
             await Transaction.findOneAndUpdate(
               { stripePaymentIntentId: paymentIntentId },
               {
