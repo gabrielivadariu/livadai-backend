@@ -10,6 +10,7 @@ const transactionSchema = new mongoose.Schema(
     type: { type: String, enum: ["payment", "payout"], default: "payment" },
     stripePaymentIntentId: { type: String, unique: true, sparse: true },
     stripeChargeId: { type: String },
+    stripeTransferId: { type: String, unique: true, sparse: true },
     platformFee: { type: Number },
     status: { type: String },
   },
