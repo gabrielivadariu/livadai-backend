@@ -13,6 +13,7 @@ const { isPayoutEligible, logPayoutAttempt } = require("../utils/payout");
 const { sendContentReportEmail, sendDisputeEmail, sendUserReportEmail } = require("../utils/reports");
 const { recalcTrustedParticipant } = require("../utils/trust");
 const { trackServerEvent } = require("../utils/analytics");
+const { refundPaymentRecord } = require("../utils/stripeRefunds");
 
 const FALLBACK_EXPERIENCE_DURATION_MINUTES = 120;
 const reviewEligibleStatuses = new Set([
@@ -353,15 +354,13 @@ const cancelBookingByHost = async (req, res) => {
     // Refund if payment exists
     if (["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"].includes(booking.status)) {
       const payment = await Payment.findOne({ booking: booking._id, status: { $in: ["CONFIRMED", "INITIATED"] } });
-      if (payment?.stripePaymentIntentId) {
+      if (payment) {
         try {
-          await stripe.refunds.create({
-            payment_intent: payment.stripePaymentIntentId,
-            refund_application_fee: true,
-            reverse_transfer: true,
+          await refundPaymentRecord({
+            payment,
+            bookingId: booking._id,
+            idempotencyKeyBase: "host_cancel_refund",
           });
-          payment.status = "REFUNDED";
-          await payment.save();
         } catch (err) {
           console.error("Refund failed", err?.message || err);
         }

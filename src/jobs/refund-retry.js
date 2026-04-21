@@ -4,6 +4,7 @@ const Payment = require("../models/payment.model");
 const { sendEmail } = require("../utils/mailer");
 const { createNotification } = require("../controllers/notifications.controller");
 const { buildRefundCompletedEmail } = require("../utils/emailTemplates");
+const { refundPaymentRecord } = require("../utils/stripeRefunds");
 
 const RESEND_AFTER_MS = 6 * 60 * 60 * 1000;
 
@@ -53,26 +54,15 @@ const setupRefundRetryJob = () => {
           bk.refundedAt = bk.refundedAt || now;
           await bk.save();
         } else {
-          const paymentIntentId = payment?.stripePaymentIntentId;
-          const chargeId = payment?.stripeChargeId;
-          if (!paymentIntentId && !chargeId) {
+          if (!payment) {
             continue;
           }
           try {
-            await stripe.refunds.create(
-              paymentIntentId
-                ? {
-                    payment_intent: paymentIntentId,
-                    refund_application_fee: true,
-                    reverse_transfer: true,
-                  }
-                : { charge: chargeId, refund_application_fee: true, reverse_transfer: true },
-              { idempotencyKey: `refund_retry_${bk._id}_${bk.refundAttempts}` }
-            );
-            if (payment) {
-              payment.status = "REFUNDED";
-              await payment.save();
-            }
+            await refundPaymentRecord({
+              payment,
+              bookingId: bk._id,
+              idempotencyKeyBase: `refund_retry_${bk._id}_${bk.refundAttempts}`,
+            });
             bk.status = "REFUNDED";
             bk.refundedAt = now;
             await bk.save();

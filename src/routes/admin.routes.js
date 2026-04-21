@@ -30,6 +30,7 @@ const {
   buildStripeFeeConfig,
   calculateHostFeeBreakdown,
 } = require("../utils/hostFeePolicy");
+const { refundPaymentRecord } = require("../utils/stripeRefunds");
 const { authenticate, requireAdminAllowlist, requireAdminCapability, requireOwnerAdmin } = require("../middleware/auth.middleware");
 const {
   ADMIN_ROLES,
@@ -920,10 +921,12 @@ const restoreExperienceSpotsForCancelledBooking = async (booking, expDoc) => {
 const refundBooking = async (booking, reason = "Admin action") => {
   try {
     const payment = await Payment.findOne({ booking: booking._id, status: { $in: ["CONFIRMED", "INITIATED"] } });
-    if (payment?.stripePaymentIntentId) {
-      await stripe.refunds.create({ payment_intent: payment.stripePaymentIntentId });
-      payment.status = "REFUNDED";
-      await payment.save();
+    if (payment) {
+      await refundPaymentRecord({
+        payment,
+        bookingId: booking._id,
+        idempotencyKeyBase: "admin_refund_booking",
+      });
     }
     booking.status = "REFUNDED";
     booking.refundedAt = new Date();
@@ -3492,17 +3495,18 @@ router.post("/bookings/:id/cancel", requireAdminCapability(ADMIN_CAPABILITIES.BO
     let payment = null;
     if (adminBookingPaidStatuses.includes(String(booking.status || "").toUpperCase())) {
       payment = await Payment.findOne({ booking: booking._id, status: { $in: ["CONFIRMED", "INITIATED"] } }).sort({ createdAt: -1 });
-      if (payment?.stripePaymentIntentId) {
+      if (payment) {
         refundAttempted = true;
         try {
-          await stripe.refunds.create({
-            payment_intent: payment.stripePaymentIntentId,
-            refund_application_fee: true,
-            reverse_transfer: true,
+          const refundResult = await refundPaymentRecord({
+            payment,
+            bookingId: booking._id,
+            idempotencyKeyBase: "admin_cancel_booking",
           });
-          payment.status = "REFUNDED";
-          await payment.save();
           refundSucceeded = true;
+          if (refundResult.reversalSucceeded === false) {
+            refundErrorMessage = refundResult.reversalErrorMessage || null;
+          }
         } catch (err) {
           refundErrorMessage = err?.message || "Refund failed";
           console.error("Admin cancel booking refund error", refundErrorMessage);
@@ -3584,7 +3588,7 @@ router.post("/bookings/:id/refund", requireAdminCapability(ADMIN_CAPABILITIES.BO
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
     const payment = await Payment.findOne({ booking: booking._id, status: { $in: ["CONFIRMED", "INITIATED"] } }).sort({ createdAt: -1 });
-    if (!payment?.stripePaymentIntentId) {
+    if (!payment) {
       return res.status(400).json({ message: "No refundable payment found" });
     }
 
@@ -3594,14 +3598,11 @@ router.post("/bookings/:id/refund", requireAdminCapability(ADMIN_CAPABILITIES.BO
       refundedAt: booking.refundedAt || null,
     };
 
-    await stripe.refunds.create({
-      payment_intent: payment.stripePaymentIntentId,
-      refund_application_fee: true,
-      reverse_transfer: true,
+    const refundResult = await refundPaymentRecord({
+      payment,
+      bookingId: booking._id,
+      idempotencyKeyBase: "admin_manual_refund",
     });
-
-    payment.status = "REFUNDED";
-    await payment.save();
     booking.status = "REFUNDED";
     booking.refundedAt = new Date();
     booking.cancelledAt = booking.cancelledAt || new Date();
@@ -3621,10 +3622,17 @@ router.post("/bookings/:id/refund", requireAdminCapability(ADMIN_CAPABILITIES.BO
           refundedAt: booking.refundedAt || null,
         },
       },
-      meta: { paymentId: String(payment._id) },
+      meta: {
+        paymentId: String(payment._id),
+        transferReversalWarning: refundResult.reversalSucceeded === false ? refundResult.reversalErrorMessage || "" : "",
+      },
     });
 
-    return res.json({ message: "Refund succeeded", bookingId: String(booking._id), paymentId: String(payment._id) });
+    return res.json({
+      message: refundResult.reversalSucceeded === false ? "Refund succeeded, transfer reversal needs review" : "Refund succeeded",
+      bookingId: String(booking._id),
+      paymentId: String(payment._id),
+    });
   } catch (err) {
     console.error("Admin booking refund error", err);
     return res.status(500).json({ message: err?.message || "Failed to refund booking" });

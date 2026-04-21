@@ -17,6 +17,7 @@ const {
 const { deleteCloudinaryUrls, getCloudinaryInfo, getTargetKey } = require("../utils/cloudinary-media");
 const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 const { trackServerEvent } = require("../utils/analytics");
+const { refundPaymentRecord } = require("../utils/stripeRefunds");
 
 const MAX_RECURRING_OCCURRENCES = 240;
 const BOOKING_STATUSES_COUNTED = ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"];
@@ -908,15 +909,13 @@ const cancelExperience = async (req, res) => {
         let refunded = false;
         const payments = await Payment.find({ booking: bk._id, status: "CONFIRMED" });
         for (const pay of payments) {
-          if (!pay.stripePaymentIntentId) continue;
+          if (!pay) continue;
           try {
-            await stripe.refunds.create({
-              payment_intent: pay.stripePaymentIntentId,
-              refund_application_fee: true,
-              reverse_transfer: true,
+            await refundPaymentRecord({
+              payment: pay,
+              bookingId: bk._id,
+              idempotencyKeyBase: "experience_cancel_refund",
             });
-            pay.status = "REFUNDED";
-            await pay.save();
             refunded = true;
           } catch (err) {
             console.error("Refund failed", err.message);
