@@ -13,12 +13,19 @@ const paymentSchema = new mongoose.Schema(
     stripePaymentIntentId: { type: String },
     stripeSessionId: { type: String },
     stripeChargeId: { type: String },
+    stripeTransferId: { type: String },
+    stripeTransferReversalId: { type: String },
     amount: { type: Number },
     totalAmount: { type: Number },
     currency: { type: String, default: "ron" },
     livadaiFee: { type: Number },
     hostShare: { type: Number },
     platformFee: { type: Number },
+    chargeModel: {
+      type: String,
+      enum: ["DESTINATION_CHARGE", "SEPARATE_CHARGE_AND_TRANSFER"],
+      default: "DESTINATION_CHARGE",
+    },
     hostFeeMode: {
       type: String,
       enum: ["STANDARD", "HOST_PAYS_STRIPE"],
@@ -27,6 +34,16 @@ const paymentSchema = new mongoose.Schema(
     transferAmount: { type: Number },
     hostNetAmount: { type: Number },
     estimatedStripeFee: { type: Number },
+    transferStatus: {
+      type: String,
+      enum: ["NOT_READY", "READY", "TRANSFERRED", "BLOCKED", "FAILED", "REVERSED"],
+      default: "NOT_READY",
+    },
+    transferReadyAt: { type: Date },
+    transferredAt: { type: Date },
+    transferBlockedReason: { type: String, default: "" },
+    transferFailureCode: { type: String, default: "" },
+    transferFailureMessage: { type: String, default: "" },
     paymentType: { type: String, enum: ["PAID_BOOKING", "DEPOSIT", "SERVICE_FEE"], default: "PAID_BOOKING" },
     analytics: {
       anonymousId: { type: String, default: "" },
@@ -48,5 +65,8 @@ const paymentSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+paymentSchema.index({ transferStatus: 1, chargeModel: 1, transferReadyAt: 1 });
+paymentSchema.index({ stripeTransferId: 1 }, { sparse: true });
 
 module.exports = mongoose.model("Payment", paymentSchema);

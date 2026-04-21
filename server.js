@@ -33,6 +33,7 @@ const setupChatArchiveJob = require("./src/jobs/chat-archive");
 const setupRefundRetryJob = require("./src/jobs/refund-retry");
 const setupFavoritesCleanupJob = require("./src/jobs/favorites-cleanup");
 const setupScheduledHostDeletionsJob = require("./src/jobs/scheduled-host-deletions");
+const setupHostTransferReleaseJob = require("./src/jobs/host-transfer-release");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -83,6 +84,7 @@ const start = async () => {
     setupFavoritesCleanupJob();
     setupRefundRetryJob();
     setupScheduledHostDeletionsJob();
+    setupHostTransferReleaseJob();
   } catch (err) {
     console.error("Server start failed", err);
     process.exit(1);
