@@ -62,6 +62,11 @@ const ADMIN_HOST_COMPLIANCE_BLOCKING_ISSUES = new Set([
   "STRIPE_CHARGES_DISABLED",
   "STRIPE_PAYOUTS_DISABLED",
 ]);
+const ADMIN_EDITABLE_EXPERIENCE_STATUSES = new Set(["draft", "published", "cancelled", "CANCELLED", "DISABLED", "NO_BOOKINGS"]);
+const ADMIN_ACTIVITY_TYPES = new Set(["INDIVIDUAL", "GROUP"]);
+const ADMIN_ENVIRONMENTS = new Set(["INDOOR", "OUTDOOR", "BOTH"]);
+const ADMIN_PRICING_MODES = new Set(["PER_PERSON", "PER_GROUP"]);
+const ADMIN_BOOKING_OCCUPIED_STATUSES = ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "COMPLETED", "AUTO_COMPLETED", "NO_SHOW", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"];
 
 const hasExperienceMedia = (exp) =>
   !!(
@@ -110,6 +115,109 @@ const getExperienceMediaTargets = (exp) => {
       .filter((ref) => !!ref.publicId || !!ref.url);
   }
   return buildExperienceMediaTargetsFromUrls(collectExperienceMediaUrls(exp));
+};
+
+const normalizeAdminString = (value, { maxLength = 0, allowEmpty = true } = {}) => {
+  if (value === undefined) return undefined;
+  const normalized = String(value ?? "").trim();
+  if (!allowEmpty && !normalized) return "";
+  if (maxLength > 0) return normalized.slice(0, maxLength);
+  return normalized;
+};
+
+const normalizeAdminOptionalNumber = (value) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return NaN;
+  return parsed;
+};
+
+const normalizeAdminCoordinate = (value) => {
+  const parsed = normalizeAdminOptionalNumber(value);
+  if (parsed === undefined) return undefined;
+  return parsed;
+};
+
+const normalizeAdminLanguages = (value) => {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return null;
+  const seen = new Set();
+  const normalized = [];
+  for (const item of value) {
+    const lang = String(item || "").trim();
+    if (!lang) continue;
+    const key = lang.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(lang);
+  }
+  return normalized;
+};
+
+const normalizeAdminMediaList = (value) => {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return null;
+  const normalized = value
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  return Array.from(new Set(normalized));
+};
+
+const normalizeAdminCoverFocusValue = (value, fallback = 50) => {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return NaN;
+  return Math.min(100, Math.max(0, parsed));
+};
+
+const formatAdminTimeLabel = (date) =>
+  date.toLocaleTimeString("ro-RO", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+const applyAdminSchedule = (exp, startsAtInput, endsAtInput, durationMinutesInput) => {
+  const nextStartsAt = startsAtInput !== undefined ? new Date(startsAtInput) : new Date(exp.startsAt || exp.startDate || Date.now());
+  if (Number.isNaN(nextStartsAt.getTime())) {
+    return { error: "Invalid startsAt" };
+  }
+
+  const durationMinutes =
+    durationMinutesInput !== undefined
+      ? normalizeAdminOptionalNumber(durationMinutesInput)
+      : normalizeAdminOptionalNumber(exp.durationMinutes);
+
+  if (durationMinutes !== undefined && (!Number.isFinite(durationMinutes) || durationMinutes <= 0)) {
+    return { error: "durationMinutes must be a positive number" };
+  }
+
+  let nextEndsAt;
+  if (endsAtInput !== undefined) {
+    nextEndsAt = new Date(endsAtInput);
+  } else if (durationMinutes !== undefined && Number.isFinite(durationMinutes)) {
+    nextEndsAt = new Date(nextStartsAt.getTime() + Number(durationMinutes) * 60 * 1000);
+  } else {
+    nextEndsAt = new Date(exp.endsAt || exp.endDate || nextStartsAt.getTime());
+  }
+
+  if (Number.isNaN(nextEndsAt.getTime())) {
+    return { error: "Invalid endsAt" };
+  }
+  if (nextEndsAt <= nextStartsAt) {
+    return { error: "endsAt must be after startsAt" };
+  }
+
+  exp.startsAt = nextStartsAt;
+  exp.endsAt = nextEndsAt;
+  exp.startDate = nextStartsAt;
+  exp.endDate = nextEndsAt;
+  exp.startTime = formatAdminTimeLabel(nextStartsAt);
+  exp.endTime = formatAdminTimeLabel(nextEndsAt);
+  if (durationMinutes !== undefined && Number.isFinite(durationMinutes)) {
+    exp.durationMinutes = Number(durationMinutes);
+  }
+  return { ok: true };
 };
 
 const adminDeleteExperienceRecord = async (exp, scope = "admin.experience.delete") => {
@@ -2865,9 +2973,12 @@ router.get("/experiences/:id", async (req, res) => {
         shortDescription: exp.shortDescription || "",
         description: exp.description || "",
         category: exp.category || "",
+        pricingMode: exp.pricingMode || "PER_PERSON",
+        groupPackageSize: exp.groupPackageSize ?? null,
         durationMinutes: Number(exp.durationMinutes || 0),
         currencyCode: exp.currencyCode || "RON",
         activityType: exp.activityType || "",
+        environment: exp.environment || "",
         languages: Array.isArray(exp.languages) ? exp.languages : [],
         address: exp.address || exp.location?.formattedAddress || "",
         street: exp.street || exp.location?.street || "",
@@ -2875,6 +2986,12 @@ router.get("/experiences/:id", async (req, res) => {
         countryCode: exp.countryCode || "",
         latitude: exp.latitude ?? exp.locationLat ?? exp.location?.lat ?? null,
         longitude: exp.longitude ?? exp.locationLng ?? exp.location?.lng ?? null,
+        mainImageUrl: exp.mainImageUrl || "",
+        coverImageUrl: exp.coverImageUrl || "",
+        coverFocusX: Number(exp.coverFocusX ?? 50),
+        coverFocusY: Number(exp.coverFocusY ?? 50),
+        images: Array.isArray(exp.images) ? exp.images : [],
+        videos: Array.isArray(exp.videos) ? exp.videos : [],
         reminderHostSent: !!exp.reminderHostSent,
         mediaCleanedAt: exp.mediaCleanedAt || null,
         host: exp.host
@@ -2926,15 +3043,67 @@ router.patch("/experiences/:id", requireAdminCapability(ADMIN_CAPABILITIES.EXPER
     if (!id || !id.match(/^[a-f\d]{24}$/i)) {
       return res.status(400).json({ message: "Invalid experience id" });
     }
-    const { isActive, status } = req.body || {};
+    const {
+      isActive,
+      status,
+      title,
+      shortDescription,
+      description,
+      category,
+      price,
+      pricingMode,
+      groupPackageSize,
+      durationMinutes,
+      currencyCode,
+      activityType,
+      maxParticipants,
+      environment,
+      startsAt,
+      endsAt,
+      country,
+      countryCode,
+      city,
+      street,
+      streetNumber,
+      address,
+      latitude,
+      longitude,
+      languages,
+      mainImageUrl,
+      coverImageUrl,
+      images,
+      videos,
+      coverFocusX,
+      coverFocusY,
+    } = req.body || {};
     const reason = String(req.adminReason || req.body?.reason || "").trim();
     const exp = await Experience.findById(id).populate("host", "name displayName display_name email");
     if (!exp) return res.status(404).json({ message: "Experience not found" });
+
+    const occupiedAgg = await Booking.aggregate([
+      {
+        $match: {
+          experience: exp._id,
+          status: { $in: ADMIN_BOOKING_OCCUPIED_STATUSES },
+        },
+      },
+      {
+        $group: {
+          _id: "$experience",
+          participants: { $sum: { $ifNull: ["$quantity", 1] } },
+        },
+      },
+    ]);
+    const bookedParticipants = Number(occupiedAgg?.[0]?.participants || 0);
+
     const before = {
       isActive: exp.isActive !== false,
       status: exp.status || "",
       soldOut: !!exp.soldOut,
       remainingSpots: Number(exp.remainingSpots ?? 0),
+      startsAt: exp.startsAt || exp.startDate || null,
+      endsAt: exp.endsAt || exp.endDate || null,
+      durationMinutes: Number(exp.durationMinutes || 0),
     };
     const diff = {};
 
@@ -2962,7 +3131,7 @@ router.patch("/experiences/:id", requireAdminCapability(ADMIN_CAPABILITIES.EXPER
 
     if (typeof status === "string" && status.trim()) {
       const nextStatus = status.trim();
-      if (!["draft", "published", "cancelled", "CANCELLED", "DISABLED", "NO_BOOKINGS"].includes(nextStatus)) {
+      if (!ADMIN_EDITABLE_EXPERIENCE_STATUSES.has(nextStatus)) {
         return res.status(400).json({ message: "Invalid experience status" });
       }
       if (String(exp.status || "") !== nextStatus) {
@@ -2970,6 +3139,258 @@ router.patch("/experiences/:id", requireAdminCapability(ADMIN_CAPABILITIES.EXPER
       }
       exp.status = nextStatus;
     }
+
+    if (title !== undefined) {
+      const normalized = normalizeAdminString(title, { maxLength: 120, allowEmpty: false });
+      if (!normalized) return res.status(400).json({ message: "Title is required" });
+      if (exp.title !== normalized) diff.title = { from: exp.title || "", to: normalized };
+      exp.title = normalized;
+    }
+
+    if (shortDescription !== undefined) {
+      const normalized = normalizeAdminString(shortDescription, { maxLength: 50 });
+      if (normalized.length > 50) {
+        return res.status(400).json({ message: "Short description must be at most 50 characters" });
+      }
+      if (String(exp.shortDescription || "") !== normalized) diff.shortDescription = { from: exp.shortDescription || "", to: normalized };
+      exp.shortDescription = normalized;
+    }
+
+    if (description !== undefined) {
+      const normalized = normalizeAdminString(description, { maxLength: 6000 });
+      if (String(exp.description || "") !== normalized) diff.description = { from: exp.description || "", to: normalized };
+      exp.description = normalized;
+    }
+
+    if (category !== undefined) {
+      const normalized = normalizeAdminString(category, { maxLength: 120 });
+      if (String(exp.category || "") !== normalized) diff.category = { from: exp.category || "", to: normalized };
+      exp.category = normalized;
+    }
+
+    if (currencyCode !== undefined) {
+      const normalized = normalizeAdminString(currencyCode, { maxLength: 8 }).toUpperCase();
+      if (!normalized) return res.status(400).json({ message: "currencyCode is required" });
+      if (String(exp.currencyCode || "") !== normalized) diff.currencyCode = { from: exp.currencyCode || "", to: normalized };
+      exp.currencyCode = normalized;
+    }
+
+    if (pricingMode !== undefined) {
+      const normalized = normalizeAdminString(pricingMode, { maxLength: 32 }).toUpperCase();
+      if (!ADMIN_PRICING_MODES.has(normalized)) {
+        return res.status(400).json({ message: "Invalid pricing mode" });
+      }
+      if (String(exp.pricingMode || "") !== normalized) diff.pricingMode = { from: exp.pricingMode || "", to: normalized };
+      exp.pricingMode = normalized;
+    }
+
+    if (price !== undefined) {
+      const normalized = normalizeAdminOptionalNumber(price);
+      if (!Number.isFinite(normalized) || normalized < 0) {
+        return res.status(400).json({ message: "Price must be a valid number >= 0" });
+      }
+      if (Number(exp.price || 0) !== Number(normalized)) diff.price = { from: Number(exp.price || 0), to: Number(normalized) };
+      exp.price = Number(normalized);
+    }
+
+    if (groupPackageSize !== undefined) {
+      const normalized = normalizeAdminOptionalNumber(groupPackageSize);
+      if (normalized !== undefined && (!Number.isFinite(normalized) || normalized <= 0)) {
+        return res.status(400).json({ message: "groupPackageSize must be a positive number" });
+      }
+      if (Number(exp.groupPackageSize || 0) !== Number(normalized || 0)) {
+        diff.groupPackageSize = { from: Number(exp.groupPackageSize || 0), to: normalized === undefined ? null : Number(normalized) };
+      }
+      exp.groupPackageSize = normalized === undefined ? null : Number(normalized);
+    }
+
+    if (activityType !== undefined) {
+      const normalized = normalizeAdminString(activityType, { maxLength: 32 }).toUpperCase();
+      if (!ADMIN_ACTIVITY_TYPES.has(normalized)) {
+        return res.status(400).json({ message: "Invalid activity type" });
+      }
+      if (String(exp.activityType || "") !== normalized) diff.activityType = { from: exp.activityType || "", to: normalized };
+      exp.activityType = normalized;
+      if (normalized === "INDIVIDUAL") {
+        exp.maxParticipants = 1;
+      }
+    }
+
+    if (environment !== undefined) {
+      const normalized = normalizeAdminString(environment, { maxLength: 32 }).toUpperCase();
+      if (!ADMIN_ENVIRONMENTS.has(normalized)) {
+        return res.status(400).json({ message: "Invalid environment" });
+      }
+      if (String(exp.environment || "") !== normalized) diff.environment = { from: exp.environment || "", to: normalized };
+      exp.environment = normalized;
+    }
+
+    if (maxParticipants !== undefined) {
+      const normalized = normalizeAdminOptionalNumber(maxParticipants);
+      if (!Number.isFinite(normalized) || normalized <= 0) {
+        return res.status(400).json({ message: "maxParticipants must be a positive number" });
+      }
+      const nextMax = exp.activityType === "INDIVIDUAL" ? 1 : Number(normalized);
+      if (nextMax < bookedParticipants) {
+        return res.status(400).json({ message: `maxParticipants cannot be lower than booked participants (${bookedParticipants})` });
+      }
+      if (Number(exp.maxParticipants || 0) !== nextMax) diff.maxParticipants = { from: Number(exp.maxParticipants || 0), to: nextMax };
+      exp.maxParticipants = nextMax;
+    }
+
+    if (durationMinutes !== undefined || startsAt !== undefined || endsAt !== undefined) {
+      const scheduleBefore = {
+        startsAt: before.startsAt,
+        endsAt: before.endsAt,
+        durationMinutes: before.durationMinutes,
+      };
+      const scheduleResult = applyAdminSchedule(exp, startsAt, endsAt, durationMinutes);
+      if (scheduleResult?.error) {
+        return res.status(400).json({ message: scheduleResult.error });
+      }
+      const scheduleChanged =
+        String(scheduleBefore.startsAt || "") !== String(exp.startsAt || "") ||
+        String(scheduleBefore.endsAt || "") !== String(exp.endsAt || "") ||
+        Number(scheduleBefore.durationMinutes || 0) !== Number(exp.durationMinutes || 0);
+      if (scheduleChanged) {
+        diff.schedule = {
+          from: scheduleBefore,
+          to: {
+            startsAt: exp.startsAt,
+            endsAt: exp.endsAt,
+            durationMinutes: exp.durationMinutes,
+          },
+        };
+      }
+    }
+
+    if (city !== undefined) {
+      const normalized = normalizeAdminString(city, { maxLength: 120 });
+      if (String(exp.city || "") !== normalized) diff.city = { from: exp.city || "", to: normalized };
+      exp.city = normalized;
+    }
+
+    if (country !== undefined) {
+      const normalized = normalizeAdminString(country, { maxLength: 120 });
+      if (String(exp.country || "") !== normalized) diff.country = { from: exp.country || "", to: normalized };
+      exp.country = normalized;
+    }
+
+    if (countryCode !== undefined) {
+      const normalized = normalizeAdminString(countryCode, { maxLength: 16 }).toUpperCase();
+      if (String(exp.countryCode || "") !== normalized) diff.countryCode = { from: exp.countryCode || "", to: normalized };
+      exp.countryCode = normalized;
+    }
+
+    if (street !== undefined) {
+      const normalized = normalizeAdminString(street, { maxLength: 120 });
+      if (String(exp.street || "") !== normalized) diff.street = { from: exp.street || "", to: normalized };
+      exp.street = normalized;
+    }
+
+    if (streetNumber !== undefined) {
+      const normalized = normalizeAdminString(streetNumber, { maxLength: 32 });
+      if (String(exp.streetNumber || "") !== normalized) diff.streetNumber = { from: exp.streetNumber || "", to: normalized };
+      exp.streetNumber = normalized;
+    }
+
+    if (address !== undefined) {
+      const normalized = normalizeAdminString(address, { maxLength: 240 });
+      if (String(exp.address || "") !== normalized) diff.address = { from: exp.address || "", to: normalized };
+      exp.address = normalized;
+    }
+
+    if (latitude !== undefined) {
+      const normalized = normalizeAdminCoordinate(latitude);
+      if (!Number.isFinite(normalized)) return res.status(400).json({ message: "Invalid latitude" });
+      if (Number(exp.latitude ?? exp.locationLat ?? 0) !== Number(normalized)) {
+        diff.latitude = { from: exp.latitude ?? exp.locationLat ?? null, to: Number(normalized) };
+      }
+      exp.latitude = Number(normalized);
+      exp.locationLat = Number(normalized);
+    }
+
+    if (longitude !== undefined) {
+      const normalized = normalizeAdminCoordinate(longitude);
+      if (!Number.isFinite(normalized)) return res.status(400).json({ message: "Invalid longitude" });
+      if (Number(exp.longitude ?? exp.locationLng ?? 0) !== Number(normalized)) {
+        diff.longitude = { from: exp.longitude ?? exp.locationLng ?? null, to: Number(normalized) };
+      }
+      exp.longitude = Number(normalized);
+      exp.locationLng = Number(normalized);
+    }
+
+    const normalizedLanguages = normalizeAdminLanguages(languages);
+    if (normalizedLanguages === null) {
+      return res.status(400).json({ message: "languages must be an array" });
+    }
+    if (normalizedLanguages !== undefined) {
+      diff.languages = { from: Array.isArray(exp.languages) ? exp.languages : [], to: normalizedLanguages };
+      exp.languages = normalizedLanguages;
+    }
+
+    const normalizedImages = normalizeAdminMediaList(images);
+    if (normalizedImages === null) {
+      return res.status(400).json({ message: "images must be an array" });
+    }
+    if (normalizedImages !== undefined) {
+      diff.images = { from: Array.isArray(exp.images) ? exp.images.length : 0, to: normalizedImages.length };
+      exp.images = normalizedImages;
+    }
+
+    const normalizedVideos = normalizeAdminMediaList(videos);
+    if (normalizedVideos === null) {
+      return res.status(400).json({ message: "videos must be an array" });
+    }
+    if (normalizedVideos !== undefined) {
+      diff.videos = { from: Array.isArray(exp.videos) ? exp.videos.length : 0, to: normalizedVideos.length };
+      exp.videos = normalizedVideos;
+    }
+
+    if (mainImageUrl !== undefined) {
+      const normalized = normalizeAdminString(mainImageUrl, { maxLength: 2000 });
+      if (String(exp.mainImageUrl || "") !== normalized) diff.mainImageUrl = { from: exp.mainImageUrl || "", to: normalized };
+      exp.mainImageUrl = normalized || null;
+    }
+
+    if (coverImageUrl !== undefined) {
+      const normalized = normalizeAdminString(coverImageUrl, { maxLength: 2000 });
+      if (String(exp.coverImageUrl || "") !== normalized) diff.coverImageUrl = { from: exp.coverImageUrl || "", to: normalized };
+      exp.coverImageUrl = normalized || null;
+    }
+
+    if (coverFocusX !== undefined) {
+      const normalized = normalizeAdminCoverFocusValue(coverFocusX, Number(exp.coverFocusX || 50));
+      if (!Number.isFinite(normalized)) return res.status(400).json({ message: "Invalid coverFocusX" });
+      if (Number(exp.coverFocusX || 50) !== Number(normalized)) diff.coverFocusX = { from: Number(exp.coverFocusX || 50), to: Number(normalized) };
+      exp.coverFocusX = Number(normalized);
+    }
+
+    if (coverFocusY !== undefined) {
+      const normalized = normalizeAdminCoverFocusValue(coverFocusY, Number(exp.coverFocusY || 50));
+      if (!Number.isFinite(normalized)) return res.status(400).json({ message: "Invalid coverFocusY" });
+      if (Number(exp.coverFocusY || 50) !== Number(normalized)) diff.coverFocusY = { from: Number(exp.coverFocusY || 50), to: Number(normalized) };
+      exp.coverFocusY = Number(normalized);
+    }
+
+    exp.location = {
+      ...(exp.location && typeof exp.location.toObject === "function" ? exp.location.toObject() : exp.location || {}),
+      formattedAddress: exp.address || "",
+      city: exp.city || "",
+      street: exp.street || "",
+      streetNumber: exp.streetNumber || "",
+      country: exp.country || "",
+      lat: exp.latitude ?? exp.locationLat ?? null,
+      lng: exp.longitude ?? exp.locationLng ?? null,
+    };
+    exp.mediaRefs = buildExperienceMediaTargetsFromUrls(collectExperienceMediaUrls(exp));
+
+    if (exp.activityType === "INDIVIDUAL") {
+      exp.maxParticipants = 1;
+    }
+    const nextRemainingSpots = Math.max(0, Number(exp.maxParticipants || 0) - bookedParticipants);
+    exp.remainingSpots = nextRemainingSpots;
+    exp.soldOut = Number(exp.maxParticipants || 0) > 0 ? nextRemainingSpots <= 0 : false;
 
     const criticalExperienceAction =
       (typeof isActive === "boolean" && isActive === false) ||
