@@ -4600,6 +4600,7 @@ router.get("/payments/health", async (_req, res) => {
       hostsStripeMissingAccountCount,
       eligiblePayoutBookingsCount,
       payoutAttentionCountAgg,
+      transferFinancialsAgg,
       refundFailedBookingsRaw,
       disputedPaymentsRaw,
       stripeIncompleteHostsRaw,
@@ -4659,6 +4660,72 @@ router.get("/payments/health", async (_req, res) => {
           },
         },
         { $count: "count" },
+      ]),
+      Payment.aggregate([
+        {
+          $match: {
+            chargeModel: "SEPARATE_CHARGE_AND_TRANSFER",
+            paymentType: "PAID_BOOKING",
+            status: "CONFIRMED",
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            livadaiFeesMinor: { $sum: { $ifNull: ["$platformFee", 0] } },
+            hostHoldMinor: {
+              $sum: {
+                $cond: [
+                  {
+                    $in: [
+                      { $ifNull: ["$transferStatus", "NOT_READY"] },
+                      ["NOT_READY", "READY", "BLOCKED", "FAILED"],
+                    ],
+                  },
+                  { $ifNull: ["$transferAmount", { $ifNull: ["$hostNetAmount", 0] }] },
+                  0,
+                ],
+              },
+            },
+            hostTransferredMinor: {
+              $sum: {
+                $cond: [
+                  { $eq: ["$transferStatus", "TRANSFERRED"] },
+                  { $ifNull: ["$transferAmount", { $ifNull: ["$hostNetAmount", 0] }] },
+                  0,
+                ],
+              },
+            },
+            hostReversedMinor: {
+              $sum: {
+                $cond: [
+                  { $eq: ["$transferStatus", "REVERSED"] },
+                  { $ifNull: ["$transferAmount", { $ifNull: ["$hostNetAmount", 0] }] },
+                  0,
+                ],
+              },
+            },
+            holdPaymentsCount: {
+              $sum: {
+                $cond: [
+                  {
+                    $in: [
+                      { $ifNull: ["$transferStatus", "NOT_READY"] },
+                      ["NOT_READY", "READY", "BLOCKED", "FAILED"],
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            transferredPaymentsCount: {
+              $sum: {
+                $cond: [{ $eq: ["$transferStatus", "TRANSFERRED"] }, 1, 0],
+              },
+            },
+          },
+        },
       ]),
       Booking.find({ status: "REFUND_FAILED" })
         .populate("host", "name displayName display_name email stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted")
@@ -4804,6 +4871,7 @@ router.get("/payments/health", async (_req, res) => {
       .filter(Boolean)
       .slice(0, 20);
     const payoutAttentionCount = Number(payoutAttentionCountAgg?.[0]?.count || 0);
+    const transferFinancials = transferFinancialsAgg?.[0] || {};
 
     const stripeOnboardingIncompleteHosts = stripeIncompleteHostsRaw.map((u) => ({
       ...serializeAdminPaymentsHost(u),
@@ -4865,6 +4933,12 @@ router.get("/payments/health", async (_req, res) => {
         hostComplianceNameMismatches: hostComplianceNameMismatchCount,
         hostComplianceMissingBankReference: hostComplianceMissingBankRefCount,
         hostComplianceNoSnapshot: hostComplianceNoSnapshotCount,
+        livadaiFeesMinor: Number(transferFinancials.livadaiFeesMinor || 0),
+        hostHoldMinor: Number(transferFinancials.hostHoldMinor || 0),
+        hostTransferredMinor: Number(transferFinancials.hostTransferredMinor || 0),
+        hostReversedMinor: Number(transferFinancials.hostReversedMinor || 0),
+        holdPaymentsCount: Number(transferFinancials.holdPaymentsCount || 0),
+        transferredPaymentsCount: Number(transferFinancials.transferredPaymentsCount || 0),
       },
       refundFailedBookings,
       stripeOnboardingIncompleteHosts,
