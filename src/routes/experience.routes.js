@@ -3,9 +3,12 @@ const {
   createExperience,
   createRecurringExperiences,
   getMyExperiences,
+  getHostSeriesSlots,
   updateExperience,
   deleteExperience,
   deleteExperienceGroup,
+  processHostSeriesSlot,
+  processHostSeriesDay,
   listExperiences,
   getExperienceById,
   getExperienceAvailability,
@@ -20,6 +23,9 @@ const router = Router();
 router.post("/", authenticate, authorize(["HOST"]), createExperience);
 router.post("/bulk", authenticate, authorize(["HOST"]), createRecurringExperiences);
 router.get("/me", authenticate, authorize(["HOST"]), getMyExperiences);
+router.get("/group/:groupId/slots", authenticate, authorize(["HOST"]), getHostSeriesSlots);
+router.post("/group/:groupId/slots/:slotId/process", authenticate, authorize(["HOST"]), processHostSeriesSlot);
+router.post("/group/:groupId/days/:dateKey/process", authenticate, authorize(["HOST"]), processHostSeriesDay);
 router.delete("/group/:groupId", authenticate, authorize(["HOST"]), deleteExperienceGroup);
 router.patch("/:id", authenticate, authorize(["HOST"]), updateExperience);
 router.delete("/:id", authenticate, authorize(["HOST"]), deleteExperience);

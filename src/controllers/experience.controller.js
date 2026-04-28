@@ -658,6 +658,205 @@ const getMyExperiences = async (req, res) => {
   }
 };
 
+const processHostExperienceAutoAction = async (exp, hostId) => {
+  if (!exp) {
+    const err = new Error("Experience not found");
+    err.status = 404;
+    throw err;
+  }
+  if (String(exp.host) !== String(hostId)) {
+    const err = new Error("Forbidden");
+    err.status = 403;
+    throw err;
+  }
+
+  const hasBookings = await Booking.findOne({ experience: exp._id }).select("_id");
+
+  if (!hasBookings) {
+    const mediaTargets = getExperienceMediaTargets(exp);
+    await Experience.deleteOne({ _id: exp._id, host: hostId });
+    if (mediaTargets.length) {
+      const deletedCount = await deleteCloudinaryUrls(mediaTargets, {
+        scope: "experience.delete",
+      });
+      await logMediaDeletion({
+        scope: "experience.delete",
+        requestedCount: mediaTargets.length,
+        deletedCount,
+        entityType: "experience",
+        entityId: exp._id,
+        reason: "delete-without-bookings",
+      });
+    }
+    return { success: true, action: "deleted", status: "deleted", experienceId: exp._id };
+  }
+
+  const bookings = await Booking.find({ experience: exp._id }).populate("explorer", "email name displayName");
+  const hostUser = await User.findById(exp.host).select("email name displayName");
+  const appUrl = process.env.FRONTEND_URL || "https://www.livadai.com";
+  const exploreUrl = `${appUrl.replace(/\/$/, "")}/experiences`;
+
+  const resolveLanguage = (user) => {
+    const langs = Array.isArray(user?.languages) ? user.languages : [];
+    const normalized = langs.map((l) => String(l).toLowerCase());
+    if (normalized.some((l) => l.startsWith("ro") || l.includes("romanian") || l.includes("română"))) {
+      return "ro";
+    }
+    return "en";
+  };
+
+  const getFirstName = (user, language) => {
+    const name = user?.displayName || user?.name || "";
+    if (!name) return language === "ro" ? "acolo" : "there";
+    return name.split(" ")[0] || name;
+  };
+
+  const experienceDate = formatExperienceDate(exp);
+  const experienceLocation = formatExperienceLocation(exp);
+
+  for (const bk of bookings) {
+    const explorer = bk.explorer;
+    const language = resolveLanguage(explorer);
+    const firstName = getFirstName(explorer, language);
+
+    const cancelEmail = buildExperienceCancelledNoticeEmail({
+      language,
+      firstName,
+      experienceTitle: exp.title || "LIVADAI",
+      experienceDate,
+      location: experienceLocation,
+    });
+    if (explorer?.email) {
+      try {
+        await sendEmail({
+          to: explorer.email,
+          subject: cancelEmail.subject,
+          html: cancelEmail.html,
+          type: "booking_cancelled",
+          userId: explorer?._id,
+        });
+      } catch (err) {
+        console.error("Cancel notice email error", err);
+      }
+    }
+
+    try {
+      const notifTitle = language === "ro" ? "Experiență anulată" : "Experience cancelled";
+      const notifMessage =
+        language === "ro"
+          ? `Experiența ${exp.title ? `„${exp.title}”` : "ta"} a fost anulată de host. Refundul este în curs de procesare.`
+          : `The experience ${exp.title ? `“${exp.title}”` : "you booked"} was cancelled by the host. The refund is being processed.`;
+      await createNotification({
+        user: explorer?._id,
+        type: "BOOKING_CANCELLED",
+        title: notifTitle,
+        message: notifMessage,
+        data: { activityId: exp._id, bookingId: bk._id, activityTitle: exp.title },
+        push: true,
+      });
+    } catch (err) {
+      console.error("Cancel notice notification error", err);
+    }
+
+    if (["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"].includes(bk.status)) {
+      let refunded = false;
+      const payments = await Payment.find({ booking: bk._id, status: "CONFIRMED" });
+      for (const pay of payments) {
+        if (!pay) continue;
+        try {
+          await refundPaymentRecord({
+            payment: pay,
+            bookingId: bk._id,
+            idempotencyKeyBase: "experience_cancel_refund",
+          });
+          refunded = true;
+        } catch (err) {
+          console.error("Refund failed", err.message);
+        }
+      }
+      bk.status = refunded ? "REFUNDED" : "REFUND_FAILED";
+      if (refunded) {
+        bk.refundedAt = new Date();
+      }
+      await bk.save();
+      if (refunded) {
+        const amountMinor = bk.amount || bk.depositAmount || 0;
+        const amount = (Number(amountMinor) / 100).toFixed(2);
+        const currency = (bk.currency || bk.depositCurrency || "RON").toUpperCase();
+        const emailPayload = buildRefundCompletedEmail({
+          language,
+          firstName,
+          experienceTitle: exp.title || "LIVADAI",
+          amount,
+          currency,
+        });
+        if (explorer?.email) {
+          try {
+            await sendEmail({
+              to: explorer.email,
+              subject: emailPayload.subject,
+              html: emailPayload.html,
+              type: "booking_cancelled",
+              userId: explorer?._id,
+            });
+          } catch (err) {
+            console.error("Refund completed email error", err);
+          }
+        }
+
+        try {
+          const notifTitle = language === "ro" ? "Refund confirmat" : "Refund confirmed";
+          const notifMessage =
+            language === "ro"
+              ? `Refund confirmat pentru experiența ${exp.title ? `„${exp.title}”` : "ta"} – ${amount} ${currency}`
+              : `Refund confirmed for the experience ${exp.title ? `“${exp.title}”` : "you booked"} – ${amount} ${currency}`;
+          await createNotification({
+            user: explorer?._id,
+            type: "BOOKING_CANCELLED",
+            title: notifTitle,
+            message: notifMessage,
+            data: { activityId: exp._id, bookingId: bk._id, activityTitle: exp.title },
+            push: true,
+          });
+        } catch (err) {
+          console.error("Refund completed notification error", err);
+        }
+      }
+    } else if (!["CANCELLED", "REFUNDED"].includes(bk.status)) {
+      bk.status = "CANCELLED";
+      bk.cancelledAt = new Date();
+      await bk.save();
+    }
+  }
+
+  exp.status = "CANCELLED";
+  exp.isActive = false;
+  exp.soldOut = true;
+  exp.remainingSpots = 0;
+  await exp.save();
+
+  try {
+    if (hostUser?.email) {
+      const html = buildBookingCancelledEmail({
+        experience: exp,
+        ctaUrl: exploreUrl,
+        role: "host",
+      });
+      await sendEmail({
+        to: hostUser.email,
+        subject: `Experiență anulată: ${exp?.title || "LIVADAI"} – ${experienceDate}`,
+        html,
+        type: "booking_cancelled",
+        userId: hostUser._id,
+      });
+    }
+  } catch (err) {
+    console.error("Cancel experience host email error", err);
+  }
+
+  return { success: true, action: "cancelled", status: "cancelled", experienceId: exp._id };
+};
+
 const updateExperience = async (req, res) => {
   try {
     const currentUser = await User.findById(req.user.id);
@@ -738,34 +937,8 @@ const deleteExperience = async (req, res) => {
     const currentUser = await User.findById(req.user.id);
     if (currentUser?.isBanned) return res.status(403).json({ message: "Host banned" });
     if (!exp) return res.status(404).json({ message: "Experience not found" });
-
-    const hasBookings = await Booking.findOne({ experience: exp._id });
-
-    if (!hasBookings) {
-      const mediaTargets = getExperienceMediaTargets(exp);
-      await Experience.deleteOne({ _id: exp._id, host: req.user.id });
-      if (mediaTargets.length) {
-        const deletedCount = await deleteCloudinaryUrls(mediaTargets, {
-          scope: "experience.delete",
-        });
-        await logMediaDeletion({
-          scope: "experience.delete",
-          requestedCount: mediaTargets.length,
-          deletedCount,
-          entityType: "experience",
-          entityId: exp._id,
-          reason: "delete-without-bookings",
-        });
-      }
-      return res.json({ success: true, status: "deleted" });
-    }
-
-    exp.status = "cancelled";
-    exp.isActive = false;
-    exp.soldOut = true;
-    exp.remainingSpots = 0;
-    await exp.save();
-    return res.json({ success: true, status: "cancelled" });
+    const result = await processHostExperienceAutoAction(exp, req.user.id);
+    return res.json(result);
   } catch (err) {
     console.error("Delete experience error", err);
     return res.status(500).json({ message: "Server error" });
@@ -836,174 +1009,141 @@ const cancelExperience = async (req, res) => {
   try {
     const exp = await Experience.findOne({ _id: req.params.id, host: req.user.id });
     if (!exp) return res.status(404).json({ message: "Experience not found" });
-
-    const bookings = await Booking.find({ experience: exp._id }).populate("explorer", "email name displayName");
-    const hostUser = await User.findById(exp.host).select("email name displayName");
-    const appUrl = process.env.FRONTEND_URL || "https://www.livadai.com";
-    const exploreUrl = `${appUrl.replace(/\/$/, "")}/experiences`;
-
-    const resolveLanguage = (user) => {
-      const langs = Array.isArray(user?.languages) ? user.languages : [];
-      const normalized = langs.map((l) => String(l).toLowerCase());
-      if (normalized.some((l) => l.startsWith("ro") || l.includes("romanian") || l.includes("română"))) {
-        return "ro";
-      }
-      return "en";
-    };
-
-    const getFirstName = (user, language) => {
-      const name = user?.displayName || user?.name || "";
-      if (!name) return language === "ro" ? "acolo" : "there";
-      return name.split(" ")[0] || name;
-    };
-
-    const experienceDate = formatExperienceDate(exp);
-    const experienceLocation = formatExperienceLocation(exp);
-
-    // Cancel notice + refund flow
-    for (const bk of bookings) {
-      const explorer = bk.explorer;
-      const language = resolveLanguage(explorer);
-      const firstName = getFirstName(explorer, language);
-
-      const cancelEmail = buildExperienceCancelledNoticeEmail({
-        language,
-        firstName,
-        experienceTitle: exp.title || "LIVADAI",
-        experienceDate,
-        location: experienceLocation,
-      });
-      if (explorer?.email) {
-        try {
-          await sendEmail({
-            to: explorer.email,
-            subject: cancelEmail.subject,
-            html: cancelEmail.html,
-            type: "booking_cancelled",
-            userId: explorer?._id,
-          });
-        } catch (err) {
-          console.error("Cancel notice email error", err);
-        }
-      }
-
-      try {
-        const notifTitle = language === "ro" ? "Experiență anulată" : "Experience cancelled";
-        const notifMessage =
-          language === "ro"
-            ? `Experiența ${exp.title ? `„${exp.title}”` : "ta"} a fost anulată de host. Refundul este în curs de procesare.`
-            : `The experience ${exp.title ? `“${exp.title}”` : "you booked"} was cancelled by the host. The refund is being processed.`;
-        await createNotification({
-          user: explorer?._id,
-          type: "BOOKING_CANCELLED",
-          title: notifTitle,
-          message: notifMessage,
-          data: { activityId: exp._id, bookingId: bk._id, activityTitle: exp.title },
-          push: true,
-        });
-      } catch (err) {
-        console.error("Cancel notice notification error", err);
-      }
-
-      if (["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"].includes(bk.status)) {
-        let refunded = false;
-        const payments = await Payment.find({ booking: bk._id, status: "CONFIRMED" });
-        for (const pay of payments) {
-          if (!pay) continue;
-          try {
-            await refundPaymentRecord({
-              payment: pay,
-              bookingId: bk._id,
-              idempotencyKeyBase: "experience_cancel_refund",
-            });
-            refunded = true;
-          } catch (err) {
-            console.error("Refund failed", err.message);
-          }
-        }
-        bk.status = refunded ? "REFUNDED" : "REFUND_FAILED";
-        if (refunded) {
-          bk.refundedAt = new Date();
-        }
-        await bk.save();
-        if (refunded) {
-          const amountMinor = bk.amount || bk.depositAmount || 0;
-          const amount = (Number(amountMinor) / 100).toFixed(2);
-          const currency = (bk.currency || bk.depositCurrency || "RON").toUpperCase();
-          const emailPayload = buildRefundCompletedEmail({
-            language,
-            firstName,
-            experienceTitle: exp.title || "LIVADAI",
-            amount,
-            currency,
-          });
-          if (explorer?.email) {
-            try {
-              await sendEmail({
-                to: explorer.email,
-                subject: emailPayload.subject,
-                html: emailPayload.html,
-                type: "booking_cancelled",
-                userId: explorer?._id,
-              });
-            } catch (err) {
-              console.error("Refund completed email error", err);
-            }
-          }
-
-          try {
-            const notifTitle = language === "ro" ? "Refund confirmat" : "Refund confirmed";
-            const notifMessage =
-              language === "ro"
-                ? `Refund confirmat pentru experiența ${exp.title ? `„${exp.title}”` : "ta"} – ${amount} ${currency}`
-                : `Refund confirmed for the experience ${exp.title ? `“${exp.title}”` : "you booked"} – ${amount} ${currency}`;
-            await createNotification({
-              user: explorer?._id,
-              type: "BOOKING_CANCELLED",
-              title: notifTitle,
-              message: notifMessage,
-              data: { activityId: exp._id, bookingId: bk._id, activityTitle: exp.title },
-              push: true,
-            });
-          } catch (err) {
-            console.error("Refund completed notification error", err);
-          }
-        }
-      } else if (!["CANCELLED", "REFUNDED"].includes(bk.status)) {
-        bk.status = "CANCELLED";
-        bk.cancelledAt = new Date();
-        await bk.save();
-      }
-    }
-
-    exp.status = "CANCELLED";
-    exp.isActive = false;
-    exp.soldOut = true;
-    exp.remainingSpots = 0;
-    await exp.save();
-
-    try {
-      if (hostUser?.email) {
-        const html = buildBookingCancelledEmail({
-          experience: exp,
-          ctaUrl: exploreUrl,
-          role: "host",
-        });
-        await sendEmail({
-          to: hostUser.email,
-          subject: `Experiență anulată: ${exp?.title || "LIVADAI"} – ${experienceDate}`,
-          html,
-          type: "booking_cancelled",
-          userId: hostUser._id,
-        });
-      }
-    } catch (err) {
-      console.error("Cancel experience host email error", err);
-    }
-
-    return res.json({ success: true, status: "cancelled" });
+    const result = await processHostExperienceAutoAction(exp, req.user.id);
+    return res.json(result);
   } catch (err) {
     console.error("Cancel experience error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const getHostSeriesSlots = async (req, res) => {
+  try {
+    const groupId = String(req.params.groupId || "").trim();
+    if (!groupId) return res.status(400).json({ message: "groupId is required" });
+
+    const slots = await Experience.find({
+      host: req.user.id,
+      scheduleGroupId: groupId,
+      status: { $nin: ["DISABLED"] },
+    })
+      .sort({ startsAt: 1, createdAt: 1 })
+      .lean();
+
+    if (!slots.length) {
+      return res.status(404).json({ message: "No slots found for this series" });
+    }
+
+    const bookedMap = await buildBookedMap(slots.map((slot) => slot._id));
+    const now = Date.now();
+    const mapped = slots.map((slot) => {
+      const stats = computeExperienceAvailability(slot, bookedMap);
+      const start = extractExperienceStart(slot);
+      const end = extractExperienceEnd(slot);
+      const status = String(slot.status || "").toUpperCase();
+      const cancelled = ["CANCELLED", "DISABLED"].includes(status);
+      const hasBookings = Number(stats.bookedSpots || 0) > 0;
+      const startMs = toDateSafe(start)?.getTime() || 0;
+      return {
+        ...slot,
+        ...stats,
+        hasBookings,
+        canManage: !cancelled && startMs > now,
+        canDelete: !cancelled && startMs > now && !hasBookings,
+        canCancel: !cancelled && startMs > now && hasBookings,
+        dateKey: formatDateKey(start),
+        startsAt: start,
+        endsAt: end,
+      };
+    });
+
+    const days = [];
+    const dayMap = new Map();
+    for (const slot of mapped) {
+      const key = slot.dateKey || "unknown";
+      if (!dayMap.has(key)) {
+        const dayEntry = { dateKey: key, startsAt: slot.startsAt, slots: [], totalSlots: 0, bookedParticipants: 0 };
+        dayMap.set(key, dayEntry);
+        days.push(dayEntry);
+      }
+      const dayEntry = dayMap.get(key);
+      dayEntry.slots.push(slot);
+      dayEntry.totalSlots += 1;
+      dayEntry.bookedParticipants += Number(slot.bookedSpots || 0);
+    }
+
+    return res.json({
+      groupId,
+      totalSlots: mapped.length,
+      days,
+    });
+  } catch (err) {
+    console.error("Get host series slots error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const processHostSeriesSlot = async (req, res) => {
+  try {
+    const groupId = String(req.params.groupId || "").trim();
+    const slotId = String(req.params.slotId || "").trim();
+    if (!groupId || !slotId) return res.status(400).json({ message: "groupId and slotId are required" });
+
+    const exp = await Experience.findOne({
+      _id: slotId,
+      host: req.user.id,
+      scheduleGroupId: groupId,
+      status: { $nin: ["DISABLED"] },
+    });
+    if (!exp) return res.status(404).json({ message: "Slot not found" });
+
+    const result = await processHostExperienceAutoAction(exp, req.user.id);
+    return res.json({ ...result, groupId, slotId });
+  } catch (err) {
+    console.error("Process host series slot error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const processHostSeriesDay = async (req, res) => {
+  try {
+    const groupId = String(req.params.groupId || "").trim();
+    const dateKey = String(req.params.dateKey || "").trim();
+    if (!groupId || !dateKey) return res.status(400).json({ message: "groupId and dateKey are required" });
+
+    const experiences = await Experience.find({
+      host: req.user.id,
+      scheduleGroupId: groupId,
+      status: { $nin: ["DISABLED"] },
+    }).sort({ startsAt: 1, createdAt: 1 });
+
+    const daySlots = experiences.filter((exp) => formatDateKey(extractExperienceStart(exp)) === dateKey);
+    if (!daySlots.length) {
+      return res.status(404).json({ message: "No slots found for this day" });
+    }
+
+    let deletedCount = 0;
+    let cancelledCount = 0;
+    const processed = [];
+
+    for (const exp of daySlots) {
+      const result = await processHostExperienceAutoAction(exp, req.user.id);
+      if (result.action === "deleted") deletedCount += 1;
+      if (result.action === "cancelled") cancelledCount += 1;
+      processed.push({ experienceId: exp._id, action: result.action, status: result.status });
+    }
+
+    return res.json({
+      success: true,
+      groupId,
+      dateKey,
+      total: daySlots.length,
+      deletedCount,
+      cancelledCount,
+      processed,
+    });
+  } catch (err) {
+    console.error("Process host series day error", err);
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -1235,9 +1375,12 @@ module.exports = {
   createExperience,
   createRecurringExperiences,
   getMyExperiences,
+  getHostSeriesSlots,
   updateExperience,
   deleteExperience,
   deleteExperienceGroup,
+  processHostSeriesSlot,
+  processHostSeriesDay,
   listExperiences,
   getExperienceById,
   getExperienceAvailability,
