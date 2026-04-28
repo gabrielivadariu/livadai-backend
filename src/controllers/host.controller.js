@@ -55,15 +55,31 @@ const getExperienceEndDate = (exp) => {
 
 const computeHostStats = async (hostId) => {
   const now = new Date();
-  // Evenimente finalizate = experiențe care au trecut.
-  const totalEvents = await Experience.countDocuments({
+  const hostExperiences = await Experience.find({
     host: hostId,
-    endsAt: { $lt: now },
-  });
+  })
+    .select("_id endsAt")
+    .lean();
+
+  const hostExperienceIds = hostExperiences.map((exp) => exp._id).filter(Boolean);
+
+  // Evenimente finalizate = experiențe ale gazdei care au trecut de final.
+  const totalEvents = hostExperiences.filter((exp) => {
+    const end = toDateSafe(exp.endsAt);
+    return end && end < now;
+  }).length;
+
   // Participanți = locuri rezervate pentru experiențe ale gazdei care au generat
   // participare reală sau sunt în stadiile finale normale după încheiere.
+  // Folosim și experience ids ca fallback pentru booking-uri vechi unde `host`
+  // poate lipsi sau poate fi inconsistent.
   const agg = await Booking.aggregate([
-    { $match: { host: hostId, status: { $in: Array.from(bookingStatusesForStats) } } },
+    {
+      $match: {
+        status: { $in: Array.from(bookingStatusesForStats) },
+        $or: [{ host: new Types.ObjectId(hostId) }, { experience: { $in: hostExperienceIds } }],
+      },
+    },
     { $group: { _id: null, total: { $sum: { $ifNull: ["$quantity", 1] } } } },
   ]);
   const totalParticipants = agg[0]?.total || 0;
