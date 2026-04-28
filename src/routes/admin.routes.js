@@ -442,6 +442,88 @@ const resolveAdminSeriesControl = async (exp) => {
   };
 };
 
+const formatAdminSeriesDateKey = (value) => {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("sv-SE", { timeZone: "Europe/Bucharest" });
+};
+
+const getAdminSeriesMembers = async (exp, seriesControl = null) => {
+  if (!exp || !seriesControl?.isSeries) return [];
+  if (seriesControl.mode === "native" && seriesControl.seriesKey) {
+    return Experience.find({ scheduleGroupId: seriesControl.seriesKey })
+      .populate("host", "name displayName display_name email stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted")
+      .sort({ startsAt: 1, startDate: 1, createdAt: 1 })
+      .lean();
+  }
+  if (seriesControl.mode === "legacy" && Array.isArray(seriesControl.members) && seriesControl.members.length) {
+    return Experience.find({ _id: { $in: seriesControl.members.map((row) => row._id || row) } })
+      .populate("host", "name displayName display_name email stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted")
+      .sort({ startsAt: 1, startDate: 1, createdAt: 1 })
+      .lean();
+  }
+  return [];
+};
+
+const buildAdminSeriesDays = async (members = []) => {
+  const memberIds = members.map((row) => row._id).filter(Boolean);
+  if (!memberIds.length) return [];
+
+  const [participantsAgg, bookingsAgg] = await Promise.all([
+    Booking.aggregate([
+      { $match: { experience: { $in: memberIds }, status: { $in: adminParticipantStatuses } } },
+      { $group: { _id: "$experience", participants: { $sum: { $ifNull: ["$quantity", 1] } } } },
+    ]),
+    Booking.aggregate([
+      { $match: { experience: { $in: memberIds } } },
+      { $group: { _id: "$experience", bookingsCount: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const participantsByExperience = new Map(participantsAgg.map((row) => [String(row._id), Number(row.participants || 0)]));
+  const bookingsByExperience = new Map(bookingsAgg.map((row) => [String(row._id), Number(row.bookingsCount || 0)]));
+  const dayMap = new Map();
+
+  for (const member of members) {
+    const dateKey = formatAdminSeriesDateKey(member.startsAt || member.startDate || member.createdAt);
+    const existing = dayMap.get(dateKey) || {
+      dateKey,
+      startsAt: member.startsAt || member.startDate || null,
+      totalSlots: 0,
+      participantsBooked: 0,
+      availableSpots: 0,
+      slots: [],
+    };
+    const participantsBooked = participantsByExperience.get(String(member._id)) || 0;
+    const bookingsTotal = bookingsByExperience.get(String(member._id)) || 0;
+    const remainingSpots = Number(member.remainingSpots ?? 0);
+
+    existing.totalSlots += 1;
+    existing.participantsBooked += participantsBooked;
+    existing.availableSpots += Math.max(0, remainingSpots);
+    existing.slots.push({
+      id: String(member._id),
+      startsAt: member.startsAt || member.startDate || null,
+      endsAt: member.endsAt || member.endDate || null,
+      status: member.status || "",
+      isActive: member.isActive !== false,
+      maxParticipants: Number(member.maxParticipants ?? 0),
+      remainingSpots,
+      participantsBooked,
+      bookingsTotal,
+      hasBookings: bookingsTotal > 0,
+    });
+    dayMap.set(dateKey, existing);
+  }
+
+  return Array.from(dayMap.values())
+    .map((day) => ({
+      ...day,
+      slots: day.slots.sort((a, b) => new Date(a.startsAt || 0).getTime() - new Date(b.startsAt || 0).getTime()),
+    }))
+    .sort((a, b) => new Date(a.startsAt || 0).getTime() - new Date(b.startsAt || 0).getTime());
+};
+
 const getExperienceEndDate = (exp) => {
   if (!exp) return null;
   const rawEnd = exp.endsAt || exp.endDate;
@@ -590,7 +672,7 @@ const serializeAdminUser = (user) => ({
   stripeConnected: !!user.stripeAccountId,
 });
 
-const serializeAdminExperience = (exp, participantsByExperience = new Map()) => ({
+const serializeAdminExperience = (exp, participantsByExperience = new Map(), overrides = {}) => ({
   id: String(exp._id),
   title: exp.title || "",
   status: exp.status || "",
@@ -617,6 +699,7 @@ const serializeAdminExperience = (exp, participantsByExperience = new Map()) => 
       }
     : null,
   participantsBooked: participantsByExperience.get(String(exp._id)) || 0,
+  ...overrides,
 });
 
 const isObjectIdLike = (value) => /^[a-f\d]{24}$/i.test(String(value || ""));
@@ -2572,16 +2655,11 @@ router.get("/experiences", async (req, res) => {
       ];
     }
 
-    const [total, rows] = await Promise.all([
-      Experience.countDocuments(filter),
-      Experience.find(filter)
-        .select("host title status isActive price environment city country startsAt endsAt startDate endDate maxParticipants remainingSpots soldOut createdAt updatedAt")
-        .populate("host", "name displayName display_name email")
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-    ]);
+    const rows = await Experience.find(filter)
+      .select("host title status isActive price environment city country startsAt endsAt startDate endDate maxParticipants remainingSpots soldOut createdAt updatedAt scheduleGroupId")
+      .populate("host", "name displayName display_name email")
+      .sort({ createdAt: -1 })
+      .lean();
 
     const ids = rows.map((r) => r._id);
     const bookingsAgg = ids.length
@@ -2602,12 +2680,66 @@ router.get("/experiences", async (req, res) => {
       : [];
     const participantsByExperience = new Map(bookingsAgg.map((row) => [String(row._id), Number(row.participants || 0)]));
 
+    const groupedItems = [];
+    const seriesMap = new Map();
+
+    for (const row of rows) {
+      const seriesKey = String(row.scheduleGroupId || "").trim();
+      if (!seriesKey) {
+        groupedItems.push(serializeAdminExperience(row, participantsByExperience));
+        continue;
+      }
+
+      const existing = seriesMap.get(seriesKey);
+      if (!existing) {
+        seriesMap.set(seriesKey, {
+          representative: row,
+          slotsCount: 1,
+          participantsBooked: participantsByExperience.get(String(row._id)) || 0,
+          availableSpots: Math.max(0, Number(row.remainingSpots ?? 0)),
+          nextStartsAt: row.startsAt || row.startDate || null,
+        });
+        continue;
+      }
+
+      existing.slotsCount += 1;
+      existing.participantsBooked += participantsByExperience.get(String(row._id)) || 0;
+      existing.availableSpots += Math.max(0, Number(row.remainingSpots ?? 0));
+      const rowStart = row.startsAt || row.startDate || null;
+      const currentStart = existing.nextStartsAt ? new Date(existing.nextStartsAt).getTime() : Number.POSITIVE_INFINITY;
+      const nextStart = rowStart ? new Date(rowStart).getTime() : Number.POSITIVE_INFINITY;
+      if (nextStart < currentStart) {
+        existing.representative = row;
+        existing.nextStartsAt = rowStart;
+      }
+    }
+
+    for (const { representative, slotsCount, participantsBooked, availableSpots, nextStartsAt } of seriesMap.values()) {
+      groupedItems.push(
+        serializeAdminExperience(representative, participantsByExperience, {
+          startsAt: nextStartsAt || representative.startsAt || representative.startDate || null,
+          participantsBooked,
+          seriesSlotsCount: slotsCount,
+          seriesAvailableSlots: availableSpots,
+        })
+      );
+    }
+
+    groupedItems.sort((a, b) => {
+      const aAt = new Date(a.createdAt || 0).getTime();
+      const bAt = new Date(b.createdAt || 0).getTime();
+      return bAt - aAt;
+    });
+
+    const total = groupedItems.length;
+    const pagedItems = groupedItems.slice(skip, skip + limit);
+
     return res.json({
       page,
       limit,
       total,
       pages: Math.max(1, Math.ceil(total / limit)),
-      items: rows.map((row) => serializeAdminExperience(row, participantsByExperience)),
+      items: pagedItems,
     });
   } catch (err) {
     console.error("Admin experiences list error", err);
@@ -2808,6 +2940,8 @@ router.get("/experiences/:id", async (req, res) => {
     const seriesControl = await resolveAdminSeriesControl(exp);
 
     const expObjectId = new mongoose.Types.ObjectId(id);
+    const seriesMembers = await getAdminSeriesMembers(exp, seriesControl);
+    const seriesDays = await buildAdminSeriesDays(seriesMembers);
 
     const [
       bookingsTotal,
@@ -3014,6 +3148,7 @@ router.get("/experiences/:id", async (req, res) => {
               matchedCount: Number(seriesControl.matchedCount || 0),
             }
           : null,
+        seriesDays,
       },
       counts: {
         bookingsTotal,
@@ -3079,22 +3214,38 @@ router.patch("/experiences/:id", requireAdminCapability(ADMIN_CAPABILITIES.EXPER
     const reason = String(req.adminReason || req.body?.reason || "").trim();
     const exp = await Experience.findById(id).populate("host", "name displayName display_name email");
     if (!exp) return res.status(404).json({ message: "Experience not found" });
+    const seriesControl = await resolveAdminSeriesControl(exp);
+    if (seriesControl?.isSeries && (startsAt !== undefined || endsAt !== undefined)) {
+      return res.status(400).json({ message: "Series schedule is managed per slot/day. Edit common fields only from admin." });
+    }
 
-    const occupiedAgg = await Booking.aggregate([
-      {
-        $match: {
-          experience: exp._id,
-          status: { $in: ADMIN_BOOKING_OCCUPIED_STATUSES },
-        },
-      },
-      {
-        $group: {
-          _id: "$experience",
-          participants: { $sum: { $ifNull: ["$quantity", 1] } },
-        },
-      },
-    ]);
-    const bookedParticipants = Number(occupiedAgg?.[0]?.participants || 0);
+    const seriesTargets = seriesControl?.isSeries
+      ? await Experience.find(
+          seriesControl.mode === "native"
+            ? { scheduleGroupId: seriesControl.seriesKey }
+            : { _id: { $in: (seriesControl.members || []).map((row) => row._id || row) } }
+        ).populate("host", "name displayName display_name email")
+      : [exp];
+    const seriesTargetIds = seriesTargets.map((row) => row._id);
+    const seriesBookedAgg = seriesTargetIds.length
+      ? await Booking.aggregate([
+          {
+            $match: {
+              experience: { $in: seriesTargetIds },
+              status: { $in: ADMIN_BOOKING_OCCUPIED_STATUSES },
+            },
+          },
+          {
+            $group: {
+              _id: "$experience",
+              participants: { $sum: { $ifNull: ["$quantity", 1] } },
+            },
+          },
+        ])
+      : [];
+    const bookedParticipantsByExperience = new Map(seriesBookedAgg.map((row) => [String(row._id), Number(row.participants || 0)]));
+
+    const bookedParticipants = bookedParticipantsByExperience.get(String(exp._id)) || 0;
 
     const before = {
       isActive: exp.isActive !== false,
@@ -3231,6 +3382,14 @@ router.patch("/experiences/:id", requireAdminCapability(ADMIN_CAPABILITIES.EXPER
         return res.status(400).json({ message: "maxParticipants must be a positive number" });
       }
       const nextMax = exp.activityType === "INDIVIDUAL" ? 1 : Number(normalized);
+      if (seriesControl?.isSeries) {
+        const blockingMember = seriesTargets.find((row) => (bookedParticipantsByExperience.get(String(row._id)) || 0) > nextMax);
+        if (blockingMember) {
+          return res.status(400).json({
+            message: `maxParticipants cannot be lower than booked participants on slot ${String(blockingMember._id).slice(-8)}`,
+          });
+        }
+      }
       if (nextMax < bookedParticipants) {
         return res.status(400).json({ message: `maxParticipants cannot be lower than booked participants (${bookedParticipants})` });
       }
@@ -3400,23 +3559,90 @@ router.patch("/experiences/:id", requireAdminCapability(ADMIN_CAPABILITIES.EXPER
     }
 
     await exp.save();
+    if (seriesControl?.isSeries && seriesTargets.length > 1) {
+      const rootId = String(exp._id);
+      for (const sibling of seriesTargets) {
+        if (String(sibling._id) === rootId) continue;
+
+        sibling.title = exp.title;
+        sibling.shortDescription = exp.shortDescription;
+        sibling.description = exp.description;
+        sibling.category = exp.category;
+        sibling.currencyCode = exp.currencyCode;
+        sibling.pricingMode = exp.pricingMode;
+        sibling.groupPackageSize = exp.groupPackageSize;
+        sibling.price = exp.price;
+        sibling.activityType = exp.activityType;
+        sibling.environment = exp.environment;
+        sibling.country = exp.country;
+        sibling.countryCode = exp.countryCode;
+        sibling.city = exp.city;
+        sibling.street = exp.street;
+        sibling.streetNumber = exp.streetNumber;
+        sibling.address = exp.address;
+        sibling.latitude = exp.latitude;
+        sibling.longitude = exp.longitude;
+        sibling.locationLat = exp.locationLat;
+        sibling.locationLng = exp.locationLng;
+        sibling.languages = Array.isArray(exp.languages) ? [...exp.languages] : [];
+        sibling.mainImageUrl = exp.mainImageUrl;
+        sibling.coverImageUrl = exp.coverImageUrl;
+        sibling.images = Array.isArray(exp.images) ? [...exp.images] : [];
+        sibling.videos = Array.isArray(exp.videos) ? [...exp.videos] : [];
+        sibling.coverFocusX = exp.coverFocusX;
+        sibling.coverFocusY = exp.coverFocusY;
+        sibling.status = exp.status;
+        sibling.isActive = exp.isActive;
+        sibling.location = exp.location;
+        sibling.mediaRefs = exp.mediaRefs;
+
+        if (durationMinutes !== undefined) {
+          const durationResult = applyAdminSchedule(sibling, undefined, undefined, exp.durationMinutes);
+          if (durationResult?.error) {
+            return res.status(400).json({ message: durationResult.error });
+          }
+        }
+
+        if (maxParticipants !== undefined || activityType !== undefined || isActive !== undefined || status !== undefined) {
+          const siblingBookedParticipants = bookedParticipantsByExperience.get(String(sibling._id)) || 0;
+          const nextMaxParticipants = sibling.activityType === "INDIVIDUAL" ? 1 : Number(exp.maxParticipants || sibling.maxParticipants || 0);
+          sibling.maxParticipants = nextMaxParticipants;
+          sibling.remainingSpots = Math.max(0, nextMaxParticipants - siblingBookedParticipants);
+          sibling.soldOut = nextMaxParticipants > 0 ? sibling.remainingSpots <= 0 : false;
+          if (sibling.isActive === false || String(sibling.status || "").toUpperCase() === "DISABLED") {
+            sibling.soldOut = true;
+            sibling.remainingSpots = 0;
+          }
+        }
+
+        await sibling.save();
+      }
+    }
     await writeAdminAuditLog(req, {
       actionType:
         typeof isActive === "boolean" && isActive === false
           ? "EXPERIENCE_DISABLE"
           : typeof isActive === "boolean" && isActive === true
             ? "EXPERIENCE_ENABLE"
-            : "EXPERIENCE_UPDATE",
-      targetType: "experience",
-      targetId: String(exp._id),
+            : seriesControl?.isSeries
+              ? "EXPERIENCE_SERIES_UPDATE"
+              : "EXPERIENCE_UPDATE",
+      targetType: seriesControl?.isSeries ? "experience_group" : "experience",
+      targetId: seriesControl?.isSeries ? String(seriesControl.seriesKey || exp.scheduleGroupId || exp._id) : String(exp._id),
       reason: reason || undefined,
       diff: Object.keys(diff).length ? diff : { before },
       meta: {
         hostId: exp.host?._id ? String(exp.host._id) : undefined,
         hostEmail: exp.host?.email || undefined,
+        seriesMode: seriesControl?.isSeries ? seriesControl.mode : undefined,
+        updatedSlotsCount: seriesControl?.isSeries ? seriesTargets.length : 1,
       },
     });
-    return res.json({ message: "Experience updated", experience: serializeAdminExperience(exp.toObject ? exp.toObject() : exp) });
+    return res.json({
+      message: seriesControl?.isSeries ? "Experience series updated" : "Experience updated",
+      experience: serializeAdminExperience(exp.toObject ? exp.toObject() : exp),
+      updatedSlotsCount: seriesControl?.isSeries ? seriesTargets.length : 1,
+    });
   } catch (err) {
     console.error("Admin experience update error", err);
     return res.status(500).json({ message: "Failed to update experience" });
