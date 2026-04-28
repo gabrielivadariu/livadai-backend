@@ -6,7 +6,17 @@ const { Types } = require("mongoose");
 const { deleteCloudinaryUrls, getCloudinaryInfo } = require("../utils/cloudinary-media");
 const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 
-const bookingStatusesForStats = new Set(["PAID", "COMPLETED", "DEPOSIT_PAID"]);
+const bookingStatusesForStats = new Set([
+  "PAID",
+  "DEPOSIT_PAID",
+  "PENDING_ATTENDANCE",
+  "COMPLETED",
+  "AUTO_COMPLETED",
+  "NO_SHOW",
+  "DISPUTED",
+  "DISPUTE_WON",
+  "DISPUTE_LOST",
+]);
 const reviewAllowedBookingStatuses = new Set(["COMPLETED", "AUTO_COMPLETED", "PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "CONFIRMED"]);
 const FALLBACK_EXPERIENCE_DURATION_MINUTES = 120;
 const bookingStatusesForAvailability = ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"];
@@ -45,11 +55,13 @@ const getExperienceEndDate = (exp) => {
 
 const computeHostStats = async (hostId) => {
   const now = new Date();
-  // Evenimente finalizate = experiențe care au trecut
+  // Evenimente finalizate = experiențe care au trecut.
   const totalEvents = await Experience.countDocuments({
     host: hostId,
     endsAt: { $lt: now },
   });
+  // Participanți = locuri rezervate pentru experiențe ale gazdei care au generat
+  // participare reală sau sunt în stadiile finale normale după încheiere.
   const agg = await Booking.aggregate([
     { $match: { host: hostId, status: { $in: Array.from(bookingStatusesForStats) } } },
     { $group: { _id: null, total: { $sum: { $ifNull: ["$quantity", 1] } } } },
