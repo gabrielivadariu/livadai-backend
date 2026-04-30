@@ -5,7 +5,6 @@ const {
   createHostAccount,
   createOnboardingLink,
   hostDashboardLink,
-  createCheckout,
   walletBalance,
   walletTransactions,
   debugHostStatus,
@@ -22,14 +21,16 @@ const { syncHostComplianceSnapshot } = require("../utils/hostCompliance");
 
 const router = Router();
 const webhookRouter = Router();
+const legacyCheckoutDisabled = (_req, res) =>
+  res.status(410).json({ message: "Legacy checkout disabled. Use /payments/create-checkout." });
 
 // Host onboarding
 router.post("/create-host-account", authenticate, authorize(["HOST", "BOTH"]), createHostAccount);
 router.post("/create-onboarding-link", authenticate, authorize(["HOST", "BOTH"]), createOnboardingLink);
 // Host dashboard login link
 router.get("/host-dashboard", authenticate, authorize(["HOST", "BOTH"]), hostDashboardLink);
-// Client checkout -> payment intent
-router.post("/checkout", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), createCheckout);
+// Legacy checkout route intentionally disabled after migration to separate charges and transfers.
+router.post("/checkout", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), legacyCheckoutDisabled);
 // Host wallet balance
 router.get("/wallet/balance", authenticate, authorize(["HOST", "BOTH"]), walletBalance);
 // Host wallet transactions
