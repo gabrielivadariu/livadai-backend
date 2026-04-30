@@ -978,6 +978,348 @@ const serializeAdminPaymentIssueBooking = (booking, extras = {}) => ({
   issueReason: extras.issueReason || "",
 });
 
+const ADMIN_PAYMENT_FILTER_LIMIT_DEFAULT = 20;
+const ADMIN_PAYMENT_FILTER_LIMIT_MAX = 100;
+const ADMIN_PAYMENT_TRANSFER_HOLD_STATUSES = ["NOT_READY", "READY", "BLOCKED", "FAILED", "NEEDS_MANUAL_REVIEW"];
+const ADMIN_PAYMENT_BLOCKED_STATUSES = ["BLOCKED", "NEEDS_MANUAL_REVIEW"];
+const ADMIN_PAYMENT_FAILED_STATUSES = ["FAILED", "NEEDS_MANUAL_REVIEW"];
+
+const parseAdminDateStart = (value) => {
+  if (!value) return null;
+  const date = new Date(`${String(value).trim()}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const parseAdminDateEnd = (value) => {
+  if (!value) return null;
+  const date = new Date(`${String(value).trim()}T23:59:59.999Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const buildAdminPaymentStateMatch = (state) => {
+  switch (String(state || "all").trim().toLowerCase()) {
+    case "paid":
+    case "confirmed":
+      return { status: "CONFIRMED" };
+    case "in_hold":
+      return {
+        chargeModel: "SEPARATE_CHARGE_AND_TRANSFER",
+        status: "CONFIRMED",
+        transferStatus: { $in: ADMIN_PAYMENT_TRANSFER_HOLD_STATUSES },
+      };
+    case "ready":
+    case "ready_for_transfer":
+      return {
+        chargeModel: "SEPARATE_CHARGE_AND_TRANSFER",
+        status: "CONFIRMED",
+        transferStatus: "READY",
+      };
+    case "transferred":
+      return {
+        chargeModel: "SEPARATE_CHARGE_AND_TRANSFER",
+        status: "CONFIRMED",
+        transferStatus: "TRANSFERRED",
+      };
+    case "blocked":
+      return {
+        chargeModel: "SEPARATE_CHARGE_AND_TRANSFER",
+        status: "CONFIRMED",
+        transferStatus: { $in: ADMIN_PAYMENT_BLOCKED_STATUSES },
+      };
+    case "failed":
+      return {
+        chargeModel: "SEPARATE_CHARGE_AND_TRANSFER",
+        status: "CONFIRMED",
+        transferStatus: { $in: ADMIN_PAYMENT_FAILED_STATUSES },
+      };
+    case "refunded":
+      return {
+        $or: [{ status: "REFUNDED" }, { status: "DISPUTE_LOST" }],
+      };
+    case "disputed":
+      return {
+        status: { $in: ["DISPUTED", "DISPUTE_LOST"] },
+      };
+    default:
+      return {};
+  }
+};
+
+const buildAdminPaymentSummaryFromItems = (payments) => {
+  const summary = {
+    totalPaymentsCollectedMinor: 0,
+    totalPlatformFeeMinor: 0,
+    totalHostMoneyInHoldMinor: 0,
+    totalTransferredToHostsMinor: 0,
+    totalBlockedMinor: 0,
+    totalFailedMinor: 0,
+    totalRefundedMinor: 0,
+    totalPendingTransferMinor: 0,
+    totalReadyForTransferMinor: 0,
+    paymentsCount: 0,
+    holdPaymentsCount: 0,
+    transferredPaymentsCount: 0,
+    blockedPaymentsCount: 0,
+    failedPaymentsCount: 0,
+    refundedPaymentsCount: 0,
+    readyPaymentsCount: 0,
+  };
+
+  for (const payment of payments || []) {
+    const totalAmount = Number(payment.totalAmount || payment.amount || 0);
+    const platformFee = Number(payment.platformFee || 0);
+    const transferAmount = Number(payment.transferAmount || payment.hostNetAmount || 0);
+    const transferStatus = String(payment.transferStatus || "NOT_READY");
+    const paymentStatus = String(payment.status || "");
+
+    summary.paymentsCount += 1;
+    summary.totalPaymentsCollectedMinor += totalAmount;
+    summary.totalPlatformFeeMinor += platformFee;
+
+    if (paymentStatus === "REFUNDED") {
+      summary.refundedPaymentsCount += 1;
+      summary.totalRefundedMinor += totalAmount;
+    }
+
+    if (transferStatus === "TRANSFERRED") {
+      summary.transferredPaymentsCount += 1;
+      summary.totalTransferredToHostsMinor += transferAmount;
+      continue;
+    }
+
+    if (transferStatus === "READY") {
+      summary.readyPaymentsCount += 1;
+      summary.totalReadyForTransferMinor += transferAmount;
+      summary.holdPaymentsCount += 1;
+      summary.totalHostMoneyInHoldMinor += transferAmount;
+      continue;
+    }
+
+    if (ADMIN_PAYMENT_BLOCKED_STATUSES.includes(transferStatus)) {
+      summary.blockedPaymentsCount += 1;
+      summary.totalBlockedMinor += transferAmount;
+      summary.holdPaymentsCount += 1;
+      summary.totalHostMoneyInHoldMinor += transferAmount;
+      continue;
+    }
+
+    if (transferStatus === "FAILED") {
+      summary.failedPaymentsCount += 1;
+      summary.totalFailedMinor += transferAmount;
+      summary.holdPaymentsCount += 1;
+      summary.totalHostMoneyInHoldMinor += transferAmount;
+      continue;
+    }
+
+    if (transferStatus === "NOT_READY" || !transferStatus) {
+      summary.totalPendingTransferMinor += transferAmount;
+      summary.holdPaymentsCount += 1;
+      summary.totalHostMoneyInHoldMinor += transferAmount;
+      continue;
+    }
+  }
+
+  return summary;
+};
+
+const buildAdminHostSummariesFromItems = (payments) => {
+  const byHost = new Map();
+  for (const payment of payments || []) {
+    const host = payment.host || payment.booking?.host || null;
+    if (!host?._id) continue;
+    const key = String(host._id);
+    if (!byHost.has(key)) {
+      byHost.set(key, {
+        id: key,
+        name: host.displayName || host.display_name || host.name || "",
+        email: host.email || "",
+        stripeAccountId: host.stripeAccountId || null,
+        isStripeChargesEnabled: !!host.isStripeChargesEnabled,
+        isStripePayoutsEnabled: !!host.isStripePayoutsEnabled,
+        isStripeDetailsSubmitted: !!host.isStripeDetailsSubmitted,
+        totalEarnedMinor: 0,
+        totalInHoldMinor: 0,
+        totalReadyMinor: 0,
+        totalTransferredMinor: 0,
+        totalBlockedMinor: 0,
+        totalFailedMinor: 0,
+        paymentsCount: 0,
+      });
+    }
+    const row = byHost.get(key);
+    const transferAmount = Number(payment.transferAmount || payment.hostNetAmount || 0);
+    const transferStatus = String(payment.transferStatus || "NOT_READY");
+    row.paymentsCount += 1;
+    row.totalEarnedMinor += transferAmount;
+    if (transferStatus === "TRANSFERRED") row.totalTransferredMinor += transferAmount;
+    if (transferStatus === "READY") row.totalReadyMinor += transferAmount;
+    if (ADMIN_PAYMENT_BLOCKED_STATUSES.includes(transferStatus)) row.totalBlockedMinor += transferAmount;
+    if (transferStatus === "FAILED") row.totalFailedMinor += transferAmount;
+    if (ADMIN_PAYMENT_TRANSFER_HOLD_STATUSES.includes(transferStatus)) row.totalInHoldMinor += transferAmount;
+  }
+  return Array.from(byHost.values()).sort((a, b) => b.totalEarnedMinor - a.totalEarnedMinor);
+};
+
+const buildAdminPaymentTimeline = ({ payment, booking, experience }) => {
+  const endsAt = experience?.endsAt || experience?.endDate || experience?.startDate || null;
+  return [
+    {
+      key: "client_paid",
+      label: "Client paid",
+      at: payment?.createdAt || null,
+      status: payment?.createdAt ? "done" : "pending",
+    },
+    {
+      key: "payment_confirmed",
+      label: "Payment confirmed",
+      at: payment?.status === "CONFIRMED" ? payment?.updatedAt || payment?.createdAt || null : null,
+      status: payment?.status === "CONFIRMED" ? "done" : payment?.status === "FAILED" ? "blocked" : "pending",
+    },
+    {
+      key: "experience_ended",
+      label: "Experience ended",
+      at: endsAt,
+      status: endsAt ? "done" : "pending",
+    },
+    {
+      key: "completed",
+      label: "Completed / auto-completed",
+      at: booking?.completedAt || null,
+      status: booking?.completedAt ? "done" : "pending",
+    },
+    {
+      key: "eligible",
+      label: "Payout eligible at",
+      at: booking?.payoutEligibleAt || null,
+      status: booking?.payoutEligibleAt ? "done" : "pending",
+    },
+    {
+      key: "transfer_attempted",
+      label: "Transfer attempted",
+      at: payment?.lastTransferAttemptAt || null,
+      status: payment?.lastTransferAttemptAt ? "done" : "pending",
+    },
+    {
+      key: "transfer_final",
+      label: "Transfer completed / failed / blocked",
+      at: payment?.transferredAt || payment?.lastTransferAttemptAt || null,
+      status:
+        payment?.transferStatus === "TRANSFERRED"
+          ? "done"
+          : ADMIN_PAYMENT_BLOCKED_STATUSES.includes(String(payment?.transferStatus || ""))
+            ? "blocked"
+            : String(payment?.transferStatus || "") === "FAILED"
+              ? "failed"
+              : "pending",
+    },
+  ];
+};
+
+const serializeAdminPaymentRecord = ({ payment, booking = null, experience = null, host = null, explorer = null, blockingReports = 0, now = new Date() }) => {
+  const payoutEligibleAt = booking?.payoutEligibleAt ? new Date(booking.payoutEligibleAt) : null;
+  const hoursUntilEligible = payoutEligibleAt ? Math.round((payoutEligibleAt.getTime() - now.getTime()) / (60 * 60 * 1000)) : null;
+  const isEligibleNow = !!(payoutEligibleAt && payoutEligibleAt <= now);
+  const transferStatus = String(payment?.transferStatus || "NOT_READY");
+  const shouldJobProcess =
+    !!payment &&
+    String(payment.chargeModel || "") === "SEPARATE_CHARGE_AND_TRANSFER" &&
+    String(payment.status || "") === "CONFIRMED" &&
+    ["READY", "FAILED"].includes(transferStatus) &&
+    (!payment.nextTransferRetryAt || new Date(payment.nextTransferRetryAt) <= now) &&
+    isEligibleNow;
+
+  return {
+    id: String(payment._id),
+    paymentId: String(payment._id),
+    bookingId: booking?._id ? String(booking._id) : payment.booking ? String(payment.booking) : null,
+    experience: experience
+      ? {
+          id: String(experience._id),
+          title: experience.title || "",
+          city: experience.city || "",
+          country: experience.country || "",
+          startsAt: experience.startsAt || experience.startDate || null,
+          endsAt: experience.endsAt || experience.endDate || null,
+          status: experience.status || "",
+          isActive: experience.isActive !== false,
+        }
+      : null,
+    explorer: explorer
+      ? {
+          id: String(explorer._id),
+          name: explorer.displayName || explorer.display_name || explorer.name || "",
+          email: explorer.email || "",
+        }
+      : null,
+    host: host
+      ? {
+          id: String(host._id),
+          name: host.displayName || host.display_name || host.name || "",
+          email: host.email || "",
+          stripeAccountId: host.stripeAccountId || null,
+          isStripeChargesEnabled: !!host.isStripeChargesEnabled,
+          isStripePayoutsEnabled: !!host.isStripePayoutsEnabled,
+          isStripeDetailsSubmitted: !!host.isStripeDetailsSubmitted,
+        }
+      : null,
+    totalPaid: Number(payment.totalAmount || payment.amount || 0),
+    amount: Number(payment.amount || 0),
+    currency: payment.currency || "ron",
+    platformFee: Number(payment.platformFee || 0),
+    transferAmount: Number(payment.transferAmount || 0),
+    hostNetAmount: Number(payment.hostNetAmount || 0),
+    estimatedStripeFee: Number(payment.estimatedStripeFee || 0),
+    realStripeFee: payment.realStripeFee !== undefined ? Number(payment.realStripeFee || 0) : null,
+    chargeModel: payment.chargeModel || "",
+    paymentStatus: payment.status || "",
+    transferStatus,
+    createdAt: payment.createdAt || null,
+    updatedAt: payment.updatedAt || null,
+    stripeCheckoutSessionId: payment.stripeSessionId || null,
+    stripePaymentIntentId: payment.stripePaymentIntentId || null,
+    stripeChargeId: payment.stripeChargeId || null,
+    stripeTransferId: payment.stripeTransferId || null,
+    stripeTransferReversalId: payment.stripeTransferReversalId || null,
+    booking: booking
+      ? {
+          id: String(booking._id),
+          status: booking.status || "",
+          quantity: Number(booking.quantity || 1),
+          attendanceStatus: booking.attendanceStatus || "",
+          attendanceConfirmed: !!booking.attendanceConfirmed,
+          completedAt: booking.completedAt || null,
+          payoutEligibleAt: booking.payoutEligibleAt || null,
+          refundedAt: booking.refundedAt || null,
+          cancelledAt: booking.cancelledAt || null,
+          disputedAt: booking.disputedAt || null,
+          disputeResolvedAt: booking.disputeResolvedAt || null,
+          lastRefundAttemptAt: booking.lastRefundAttemptAt || null,
+        }
+      : null,
+    payoutEligibility: {
+      completedAt: booking?.completedAt || null,
+      endsAt: experience?.endsAt || experience?.endDate || null,
+      payoutEligibleAt: booking?.payoutEligibleAt || null,
+      hoursUntilEligible,
+      hoursSinceEligible: payoutEligibleAt ? Math.max(0, Math.round((now.getTime() - payoutEligibleAt.getTime()) / (60 * 60 * 1000))) : null,
+      isEligibleNow,
+      shouldJobProcess,
+      blockingReports,
+    },
+    transfer: {
+      transferReadyAt: payment.transferReadyAt || null,
+      transferredAt: payment.transferredAt || null,
+      transferFailureCode: payment.transferFailureCode || "",
+      transferFailureMessage: payment.transferFailureMessage || "",
+      transferBlockedReason: payment.transferBlockedReason || "",
+      transferRetryCount: Number(payment.transferRetryCount || 0),
+      lastTransferAttemptAt: payment.lastTransferAttemptAt || null,
+      nextTransferRetryAt: payment.nextTransferRetryAt || null,
+    },
+    timeline: buildAdminPaymentTimeline({ payment, booking, experience }),
+  };
+};
+
 const getLatestHostComplianceMap = async (userIds = []) => {
   if (!Array.isArray(userIds) || !userIds.length) return new Map();
   const objectIds = userIds
@@ -5191,6 +5533,243 @@ router.get("/payments/health", async (_req, res) => {
   } catch (err) {
     console.error("Admin payments health error", err);
     return res.status(500).json({ message: "Failed to load payments health" });
+  }
+});
+
+router.get("/payments", async (req, res) => {
+  try {
+    const page = Math.max(1, Number(req.query.page || 1));
+    const limit = Math.min(
+      ADMIN_PAYMENT_FILTER_LIMIT_MAX,
+      Math.max(1, Number(req.query.limit || ADMIN_PAYMENT_FILTER_LIMIT_DEFAULT))
+    );
+    const skip = (page - 1) * limit;
+    const q = String(req.query.q || "").trim();
+    const state = String(req.query.state || "all").trim();
+    const hostId = String(req.query.hostId || "").trim();
+    const bookingId = String(req.query.bookingId || "").trim();
+    const experienceId = String(req.query.experienceId || "").trim();
+    const transferStatus = String(req.query.transferStatus || "").trim();
+    const dateFrom = parseAdminDateStart(req.query.dateFrom);
+    const dateTo = parseAdminDateEnd(req.query.dateTo);
+    const now = new Date();
+
+    const paymentQuery = { paymentType: "PAID_BOOKING" };
+    const stateMatch = buildAdminPaymentStateMatch(state);
+    if (Object.keys(stateMatch).length) {
+      Object.assign(paymentQuery, stateMatch);
+    }
+
+    if (transferStatus && transferStatus !== "all") {
+      paymentQuery.transferStatus = transferStatus;
+    }
+
+    if (dateFrom || dateTo) {
+      paymentQuery.createdAt = {};
+      if (dateFrom) paymentQuery.createdAt.$gte = dateFrom;
+      if (dateTo) paymentQuery.createdAt.$lte = dateTo;
+    }
+
+    const directOrClauses = [];
+    if (q) {
+      const regex = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      directOrClauses.push(
+        { stripeSessionId: regex },
+        { stripePaymentIntentId: regex },
+        { stripeChargeId: regex },
+        { stripeTransferId: regex },
+        { stripeTransferReversalId: regex }
+      );
+      if (mongoose.Types.ObjectId.isValid(q)) {
+        directOrClauses.push({ _id: new mongoose.Types.ObjectId(q) }, { booking: new mongoose.Types.ObjectId(q) });
+      }
+    }
+
+    if (bookingId) {
+      if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+        return res.status(400).json({ message: "Invalid bookingId filter" });
+      }
+      paymentQuery.booking = new mongoose.Types.ObjectId(bookingId);
+    }
+
+    if (hostId) {
+      if (!mongoose.Types.ObjectId.isValid(hostId)) {
+        return res.status(400).json({ message: "Invalid hostId filter" });
+      }
+      paymentQuery.host = new mongoose.Types.ObjectId(hostId);
+    }
+
+    const bookingIdSet = new Set();
+    if (experienceId) {
+      if (!mongoose.Types.ObjectId.isValid(experienceId)) {
+        return res.status(400).json({ message: "Invalid experienceId filter" });
+      }
+      const bookingRows = await Booking.find({ experience: new mongoose.Types.ObjectId(experienceId) }).select("_id").lean();
+      for (const row of bookingRows) bookingIdSet.add(String(row._id));
+    }
+
+    if (q) {
+      const regex = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      const bookingSearchClauses = [{ status: regex }];
+      if (mongoose.Types.ObjectId.isValid(q)) {
+        bookingSearchClauses.unshift({ _id: new mongoose.Types.ObjectId(q) });
+      }
+      const [matchingUsers, matchingExperiences, matchingBookings] = await Promise.all([
+        User.find({
+          $or: [{ email: regex }, { name: regex }, { displayName: regex }, { display_name: regex }],
+        })
+          .select("_id")
+          .lean(),
+        Experience.find({
+          $or: [{ title: regex }, { city: regex }, { country: regex }],
+        })
+          .select("_id")
+          .lean(),
+        Booking.find({
+          $or: bookingSearchClauses,
+        })
+          .select("_id experience host explorer")
+          .lean(),
+      ]);
+
+      const userIds = matchingUsers.map((row) => row._id);
+      if (userIds.length) {
+        directOrClauses.push({ host: { $in: userIds } }, { explorer: { $in: userIds } });
+      }
+
+      const experienceIds = new Set(matchingExperiences.map((row) => String(row._id)));
+      for (const booking of matchingBookings) {
+        bookingIdSet.add(String(booking._id));
+        if (booking.experience) experienceIds.add(String(booking.experience));
+      }
+      if (experienceIds.size) {
+        const rows = await Booking.find({ experience: { $in: Array.from(experienceIds).map((id) => new mongoose.Types.ObjectId(id)) } })
+          .select("_id")
+          .lean();
+        for (const row of rows) bookingIdSet.add(String(row._id));
+      }
+    }
+
+    if (bookingIdSet.size) {
+      const ids = Array.from(bookingIdSet)
+        .filter((id) => mongoose.Types.ObjectId.isValid(id))
+        .map((id) => new mongoose.Types.ObjectId(id));
+      if (ids.length) {
+        directOrClauses.push({ booking: { $in: ids } });
+      }
+    }
+
+    if (directOrClauses.length) {
+      paymentQuery.$or = directOrClauses;
+    }
+
+    const [total, paymentRows] = await Promise.all([
+      Payment.countDocuments(paymentQuery),
+      Payment.find(paymentQuery)
+        .populate("host", "name displayName display_name email stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted")
+        .populate("explorer", "name displayName display_name email")
+        .populate({
+          path: "booking",
+          select:
+            "_id status quantity attendanceStatus attendanceConfirmed completedAt payoutEligibleAt refundedAt cancelledAt disputedAt disputeResolvedAt lastRefundAttemptAt host explorer experience",
+          populate: [
+            {
+              path: "experience",
+              select: "title city country startsAt endsAt startDate endDate status isActive",
+            },
+            {
+              path: "host",
+              select: "name displayName display_name email stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted",
+            },
+            {
+              path: "explorer",
+              select: "name displayName display_name email",
+            },
+          ],
+        })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    const bookingIds = paymentRows
+      .map((payment) => payment.booking?._id || payment.booking)
+      .filter(Boolean)
+      .map((id) => String(id));
+
+    const blockingReportsAgg = bookingIds.length
+      ? await Report.aggregate([
+          {
+            $match: {
+              booking: { $in: bookingIds.map((id) => new mongoose.Types.ObjectId(id)) },
+              status: { $in: ["OPEN", "INVESTIGATING"] },
+              $or: [{ affectsPayout: true }, { type: { $in: ["BOOKING_DISPUTE", "STRIPE_DISPUTE"] } }],
+            },
+          },
+          { $group: { _id: "$booking", count: { $sum: 1 } } },
+        ])
+      : [];
+    const blockingReportsByBooking = new Map(blockingReportsAgg.map((row) => [String(row._id), Number(row.count || 0)]));
+
+    const items = paymentRows.map((payment) => {
+      const booking = payment.booking || null;
+      const experience = booking?.experience || null;
+      const host = payment.host || booking?.host || null;
+      const explorer = payment.explorer || booking?.explorer || null;
+      const blockingReports = booking?._id ? Number(blockingReportsByBooking.get(String(booking._id)) || 0) : 0;
+      return serializeAdminPaymentRecord({
+        payment,
+        booking,
+        experience,
+        host,
+        explorer,
+        blockingReports,
+        now,
+      });
+    });
+
+    const allFilteredPayments = await Payment.find(paymentQuery)
+      .select(
+        "booking host explorer totalAmount amount currency platformFee transferAmount hostNetAmount estimatedStripeFee status transferStatus transferBlockedReason createdAt"
+      )
+      .populate("host", "name displayName display_name email stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted")
+      .populate({
+        path: "booking",
+        select: "_id host experience",
+        populate: [
+          { path: "host", select: "name displayName display_name email stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted" },
+          { path: "experience", select: "title" },
+        ],
+      })
+      .lean();
+
+    const summary = buildAdminPaymentSummaryFromItems(allFilteredPayments);
+    const hostSummaries = buildAdminHostSummariesFromItems(allFilteredPayments).slice(0, 20);
+
+    return res.json({
+      page,
+      limit,
+      total,
+      pages: Math.max(1, Math.ceil(total / limit)),
+      generatedAt: now,
+      filters: {
+        q,
+        state,
+        hostId: hostId || "",
+        bookingId: bookingId || "",
+        experienceId: experienceId || "",
+        transferStatus: transferStatus || "all",
+        dateFrom: req.query.dateFrom || "",
+        dateTo: req.query.dateTo || "",
+      },
+      summary,
+      hostSummaries,
+      items,
+    });
+  } catch (err) {
+    console.error("Admin payments list error", err);
+    return res.status(500).json({ message: "Failed to load admin payments list" });
   }
 });
 
