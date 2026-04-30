@@ -4905,7 +4905,7 @@ router.get("/payments/health", async (_req, res) => {
                   {
                     $in: [
                       { $ifNull: ["$transferStatus", "NOT_READY"] },
-                      ["NOT_READY", "READY", "BLOCKED", "FAILED"],
+                      ["NOT_READY", "READY", "BLOCKED", "FAILED", "NEEDS_MANUAL_REVIEW"],
                     ],
                   },
                   { $ifNull: ["$transferAmount", { $ifNull: ["$hostNetAmount", 0] }] },
@@ -4937,7 +4937,7 @@ router.get("/payments/health", async (_req, res) => {
                   {
                     $in: [
                       { $ifNull: ["$transferStatus", "NOT_READY"] },
-                      ["NOT_READY", "READY", "BLOCKED", "FAILED"],
+                      ["NOT_READY", "READY", "BLOCKED", "FAILED", "NEEDS_MANUAL_REVIEW"],
                     ],
                   },
                   1,
@@ -5017,7 +5017,9 @@ router.get("/payments/health", async (_req, res) => {
 
     const relatedPayments = allBookingIds.length
       ? await Payment.find({ booking: { $in: allBookingIds } })
-          .select("booking status paymentType totalAmount amount currency stripePaymentIntentId stripeSessionId createdAt updatedAt")
+          .select(
+            "booking status paymentType totalAmount amount currency stripePaymentIntentId stripeSessionId createdAt updatedAt platformFee transferAmount hostNetAmount transferStatus transferFailureCode transferFailureMessage transferRetryCount nextTransferRetryAt lastTransferAttemptAt transferBlockedReason"
+          )
           .sort({ updatedAt: -1, createdAt: -1 })
           .lean()
       : [];
@@ -5033,6 +5035,16 @@ router.get("/payments/health", async (_req, res) => {
           currency: p.currency || "ron",
           hasStripePaymentIntent: !!p.stripePaymentIntentId,
           stripeSessionId: p.stripeSessionId || null,
+          platformFee: Number(p.platformFee || 0),
+          transferAmount: Number(p.transferAmount || 0),
+          hostNetAmount: Number(p.hostNetAmount || 0),
+          transferStatus: p.transferStatus || "",
+          transferFailureCode: p.transferFailureCode || "",
+          transferFailureMessage: p.transferFailureMessage || "",
+          transferRetryCount: Number(p.transferRetryCount || 0),
+          nextTransferRetryAt: p.nextTransferRetryAt || null,
+          lastTransferAttemptAt: p.lastTransferAttemptAt || null,
+          transferBlockedReason: p.transferBlockedReason || "",
         });
       }
     }
@@ -5083,14 +5095,18 @@ router.get("/payments/health", async (_req, res) => {
     const payoutAttentionBookings = payoutCandidateBookingsRaw
       .map((b) => {
         const host = b.host || null;
+        const payment = paymentByBooking.get(String(b._id)) || null;
         const issues = [];
         if (!host?.stripeAccountId) issues.push("HOST_NO_STRIPE_ACCOUNT");
         if (host?.stripeAccountId && !host?.isStripeDetailsSubmitted) issues.push("STRIPE_DETAILS_INCOMPLETE");
         if (host?.stripeAccountId && !host?.isStripeChargesEnabled) issues.push("STRIPE_CHARGES_DISABLED");
         if (host?.stripeAccountId && !host?.isStripePayoutsEnabled) issues.push("STRIPE_PAYOUTS_DISABLED");
+        if (payment?.transferStatus === "FAILED") issues.push("TRANSFER_FAILED");
+        if (payment?.transferStatus === "NEEDS_MANUAL_REVIEW") issues.push("TRANSFER_NEEDS_MANUAL_REVIEW");
+        if (payment?.transferStatus === "BLOCKED" && payment?.transferBlockedReason) issues.push(payment.transferBlockedReason);
         if (!issues.length) return null;
         return serializeAdminPaymentIssueBooking(b, {
-          payment: paymentByBooking.get(String(b._id)) || null,
+          payment,
           issueReason: issues.join(","),
         });
       })

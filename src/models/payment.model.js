@@ -36,7 +36,7 @@ const paymentSchema = new mongoose.Schema(
     estimatedStripeFee: { type: Number },
     transferStatus: {
       type: String,
-      enum: ["NOT_READY", "READY", "TRANSFERRED", "BLOCKED", "FAILED", "REVERSED"],
+      enum: ["NOT_READY", "READY", "TRANSFERRED", "BLOCKED", "FAILED", "REVERSED", "NEEDS_MANUAL_REVIEW"],
       default: "NOT_READY",
     },
     transferReadyAt: { type: Date },
@@ -44,6 +44,9 @@ const paymentSchema = new mongoose.Schema(
     transferBlockedReason: { type: String, default: "" },
     transferFailureCode: { type: String, default: "" },
     transferFailureMessage: { type: String, default: "" },
+    transferRetryCount: { type: Number, default: 0 },
+    lastTransferAttemptAt: { type: Date, default: null },
+    nextTransferRetryAt: { type: Date, default: null },
     paymentType: { type: String, enum: ["PAID_BOOKING", "DEPOSIT", "SERVICE_FEE"], default: "PAID_BOOKING" },
     analytics: {
       anonymousId: { type: String, default: "" },
@@ -67,6 +70,7 @@ const paymentSchema = new mongoose.Schema(
 );
 
 paymentSchema.index({ transferStatus: 1, chargeModel: 1, transferReadyAt: 1 });
+paymentSchema.index({ transferStatus: 1, nextTransferRetryAt: 1 });
 paymentSchema.index({ stripeTransferId: 1 }, { sparse: true });
 
 module.exports = mongoose.model("Payment", paymentSchema);
