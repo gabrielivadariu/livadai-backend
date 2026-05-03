@@ -18,6 +18,7 @@ const { deleteCloudinaryUrls, getCloudinaryInfo, getTargetKey } = require("../ut
 const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 const { trackServerEvent } = require("../utils/analytics");
 const { refundPaymentRecord } = require("../utils/stripeRefunds");
+const { normalizeExperienceTicketTypes } = require("../utils/ticketTypes");
 
 const MAX_RECURRING_OCCURRENCES = 240;
 const BOOKING_STATUSES_COUNTED = ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"];
@@ -356,6 +357,16 @@ const prepareExperiencePayload = (inputPayload) => {
   const pricingModeRaw = String(payload.pricingMode || "").toUpperCase();
   const pricingMode = pricingModeRaw === "PER_GROUP" ? "PER_GROUP" : "PER_PERSON";
   payload.pricingMode = pricingMode;
+  const normalizedTicketTypes = normalizeExperienceTicketTypes(payload.ticketTypes, { defaultCurrency: "RON" });
+  if (normalizedTicketTypes.error) return normalizedTicketTypes;
+  payload.ticketTypes = normalizedTicketTypes.ticketTypes || [];
+  if (payload.ticketTypes.length && pricingMode === "PER_GROUP") {
+    return {
+      error:
+        "Ticket categories are available only for per-person pricing / Categoriile de bilete sunt disponibile doar pentru preț per persoană",
+      status: 400,
+    };
+  }
   if (pricingMode === "PER_GROUP") {
     const fallbackSize = Number(payload.maxParticipants) || 1;
     const packageSize = Math.max(1, Number(payload.groupPackageSize) || fallbackSize);
@@ -370,6 +381,11 @@ const prepareExperiencePayload = (inputPayload) => {
     }
   } else {
     payload.groupPackageSize = null;
+  }
+
+  if (payload.ticketTypes.length) {
+    const paidTicketPrices = payload.ticketTypes.filter((item) => !item.isFree).map((item) => Number(item.price || 0));
+    payload.price = paidTicketPrices.length ? Math.min(...paidTicketPrices) : 0;
   }
 
   payload.currencyCode = "RON";
@@ -1274,7 +1290,7 @@ const getExperienceById = async (req, res) => {
 const getExperienceAvailability = async (req, res) => {
   try {
     const exp = await Experience.findById(req.params.id).select(
-      "_id host scheduleGroupId title startsAt endsAt startDate endDate status isActive soldOut maxParticipants remainingSpots pricingMode groupPackageSize activityType price currencyCode"
+      "_id host scheduleGroupId title startsAt endsAt startDate endDate status isActive soldOut maxParticipants remainingSpots pricingMode groupPackageSize activityType price currencyCode ticketTypes"
     );
     if (!exp) return res.status(404).json({ message: "Experience not found" });
 
@@ -1291,7 +1307,7 @@ const getExperienceAvailability = async (req, res) => {
         status: { $nin: ["DISABLED"] },
       })
         .select(
-          "_id host scheduleGroupId title startsAt endsAt startDate endDate status isActive soldOut maxParticipants remainingSpots pricingMode groupPackageSize activityType price currencyCode city country address"
+          "_id host scheduleGroupId title startsAt endsAt startDate endDate status isActive soldOut maxParticipants remainingSpots pricingMode groupPackageSize activityType price currencyCode ticketTypes city country address"
         )
         .sort({ startsAt: 1, createdAt: 1 });
       if (!slots.length) slots = [exp];
@@ -1349,7 +1365,7 @@ const getExperiencesMap = async (req, res) => {
       longitude: { $nin: [null, 0] },
     })
       .select(
-        "title shortDescription description category price pricingMode groupPackageSize latitude longitude activityType remainingSpots maxParticipants soldOut startsAt startDate endsAt endDate scheduleGroupId host"
+        "title shortDescription description category price pricingMode groupPackageSize ticketTypes latitude longitude activityType remainingSpots maxParticipants soldOut startsAt startDate endsAt endDate scheduleGroupId host"
       )
       .populate("host", "profilePhoto avatar hostProfile.avatar");
 

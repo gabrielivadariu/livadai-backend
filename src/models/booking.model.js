@@ -18,6 +18,23 @@ const bookingSchema = new mongoose.Schema(
       required: true,
     },
     quantity: { type: Number, default: 1 },
+    participantsCount: { type: Number, default: 1 },
+    capacityUsed: { type: Number, default: 1 },
+    ticketSelection: {
+      type: [
+        {
+          key: { type: String, required: true },
+          label: { type: String, required: true },
+          quantity: { type: Number, required: true, min: 0 },
+          unitPrice: { type: Number, required: true, min: 0 },
+          lineTotal: { type: Number, required: true, min: 0 },
+          currency: { type: String, default: "RON" },
+          isFree: { type: Boolean, default: false },
+          countsTowardCapacity: { type: Boolean, default: true },
+        },
+      ],
+      default: [],
+    },
     amount: { type: Number }, // stored in minor units (cents)
     currency: { type: String, default: "eur" },
     depositAmount: { type: Number, default: 0 }, // minor units

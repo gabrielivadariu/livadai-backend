@@ -8,6 +8,21 @@ const experienceSchema = new mongoose.Schema(
     description: { type: String },
     category: { type: String },
     price: { type: Number },
+    ticketTypes: {
+      type: [
+        {
+          key: { type: String, required: true },
+          label: { type: String, required: true },
+          price: { type: Number, required: true, min: 0 },
+          currency: { type: String, default: "RON" },
+          isFree: { type: Boolean, default: false },
+          countsTowardCapacity: { type: Boolean, default: true },
+          active: { type: Boolean, default: true },
+          order: { type: Number, default: 0 },
+        },
+      ],
+      default: [],
+    },
     pricingMode: { type: String, enum: ["PER_PERSON", "PER_GROUP"], default: "PER_PERSON" },
     groupPackageSize: { type: Number, default: null },
     durationMinutes: { type: Number },

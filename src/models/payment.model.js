@@ -18,6 +18,21 @@ const paymentSchema = new mongoose.Schema(
     amount: { type: Number },
     totalAmount: { type: Number },
     currency: { type: String, default: "ron" },
+    ticketSelectionSnapshot: {
+      type: [
+        {
+          key: { type: String, required: true },
+          label: { type: String, required: true },
+          quantity: { type: Number, required: true, min: 0 },
+          unitPrice: { type: Number, required: true, min: 0 },
+          lineTotal: { type: Number, required: true, min: 0 },
+          currency: { type: String, default: "RON" },
+          isFree: { type: Boolean, default: false },
+          countsTowardCapacity: { type: Boolean, default: true },
+        },
+      ],
+      default: [],
+    },
     livadaiFee: { type: Number },
     hostShare: { type: Number },
     platformFee: { type: Number },

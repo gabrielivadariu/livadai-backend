@@ -9,11 +9,12 @@ const { buildBookingConfirmedEmail, formatExperienceDate } = require("../utils/e
 const User = require("../models/user.model");
 const { readRequestAnalyticsContext, trackServerEvent } = require("../utils/analytics");
 const { HOST_FEE_MODES, calculateHostFeeBreakdown, getSavedHostStripeFeeConfig, normalizeHostFeeMode } = require("../utils/hostFeePolicy");
+const { getEffectiveTicketTypes, normalizeTicketSelection, summarizeTicketSelection } = require("../utils/ticketTypes");
 
 // New checkout flow: experienceId + quantity
 const createCheckout = async (req, res) => {
   try {
-    const { experienceId, quantity } = req.body;
+    const { experienceId, quantity, ticketSelection } = req.body;
     const analyticsContext = readRequestAnalyticsContext(req);
     const requestedQty = Math.max(1, Number(quantity) || 1);
     if (!experienceId) return res.status(400).json({ message: "experienceId required" });
@@ -29,7 +30,29 @@ const createCheckout = async (req, res) => {
     // host banned?
     const host = await User.findById(exp.host);
     if (host?.isBanned) return res.status(403).json({ message: "Host banned / experience disabled" });
-    const isFree = !exp.price || Number(exp.price) <= 0;
+    const effectiveTicketTypes = getEffectiveTicketTypes(exp);
+    const hasStructuredTickets = Array.isArray(exp.ticketTypes) && exp.ticketTypes.length > 0;
+    const normalizedSelectionResult = hasStructuredTickets
+      ? normalizeTicketSelection(ticketSelection, effectiveTicketTypes)
+      : { ticketSelection: [] };
+    if (normalizedSelectionResult.error) {
+      return res.status(normalizedSelectionResult.status || 400).json({ message: normalizedSelectionResult.error });
+    }
+    const normalizedTicketSelection = normalizedSelectionResult.ticketSelection || [];
+    const ticketSummary = summarizeTicketSelection(normalizedTicketSelection);
+    const hasPaidTicketSelection = normalizedTicketSelection.some((item) => Number(item.lineTotal || 0) > 0);
+    if (hasStructuredTickets && !normalizedTicketSelection.length) {
+      return res.status(400).json({
+        message: "Select at least one ticket category / Selectează cel puțin o categorie de bilet",
+      });
+    }
+    if (hasStructuredTickets && !hasPaidTicketSelection) {
+      return res.status(400).json({
+        message: "Select at least one paid ticket / Selectează cel puțin un bilet plătit",
+      });
+    }
+
+    const isFree = hasStructuredTickets ? ticketSummary.totalMinor <= 0 : !exp.price || Number(exp.price) <= 0;
     if (!isFree) {
       if (!host?.stripeAccountId || !host?.isStripeChargesEnabled) {
         if (host?.stripeAccountId) {
@@ -56,14 +79,19 @@ const createCheckout = async (req, res) => {
 
     const pricingMode = String(exp.pricingMode || "").toUpperCase() === "PER_GROUP" ? "PER_GROUP" : "PER_PERSON";
     const groupPackageSize = Math.max(1, Number(exp.groupPackageSize) || Number(exp.maxParticipants) || 1);
-    let seatQty = exp.activityType === "INDIVIDUAL" ? 1 : requestedQty;
-    if (pricingMode === "PER_GROUP") {
+    let seatQty = hasStructuredTickets ? ticketSummary.capacityUsed : exp.activityType === "INDIVIDUAL" ? 1 : requestedQty;
+    if (!hasStructuredTickets && pricingMode === "PER_GROUP") {
       seatQty = groupPackageSize;
     }
 
     // availability rules
-    if (exp.activityType === "INDIVIDUAL" && seatQty !== 1) {
+    if (!hasStructuredTickets && exp.activityType === "INDIVIDUAL" && seatQty !== 1) {
       return res.status(400).json({ message: "Individual activity allows a single seat" });
+    }
+    if (hasStructuredTickets && seatQty <= 0) {
+      return res.status(400).json({
+        message: "Selected tickets do not use any capacity / Biletele selectate nu ocupă niciun loc",
+      });
     }
     const available = exp.remainingSpots ?? exp.maxParticipants ?? 1;
     if (available < seatQty || exp.soldOut) {
@@ -87,9 +115,9 @@ const createCheckout = async (req, res) => {
     const baseCurrency = "ron";
     const depositCurrency = "ron";
     const serviceFeeAmountMinor = 2 * 100;
-    const unitAmount = isServiceFee ? serviceFeeAmountMinor : Math.round((exp.price || 0) * 100);
-    const checkoutQuantity = !isServiceFee && pricingMode === "PER_GROUP" ? 1 : seatQty;
-    const amount = unitAmount * checkoutQuantity;
+    const unitAmount = isServiceFee ? serviceFeeAmountMinor : hasStructuredTickets ? ticketSummary.totalMinor : Math.round((exp.price || 0) * 100);
+    const checkoutQuantity = hasStructuredTickets ? 1 : !isServiceFee && pricingMode === "PER_GROUP" ? 1 : seatQty;
+    const amount = hasStructuredTickets ? ticketSummary.totalMinor : unitAmount * checkoutQuantity;
     if (amount <= 0) return res.status(400).json({ message: "Invalid price" });
 
     let booking = await Booking.findOne({
@@ -101,6 +129,9 @@ const createCheckout = async (req, res) => {
 
     if (booking) {
       booking.quantity = seatQty;
+      booking.participantsCount = hasStructuredTickets ? ticketSummary.participantCount : seatQty;
+      booking.capacityUsed = seatQty;
+      booking.ticketSelection = normalizedTicketSelection;
       booking.amount = amount;
       booking.currency = baseCurrency;
       booking.depositAmount = 0;
@@ -113,6 +144,9 @@ const createCheckout = async (req, res) => {
         explorer: req.user.id,
         host: exp.host,
         quantity: seatQty,
+        participantsCount: hasStructuredTickets ? ticketSummary.participantCount : seatQty,
+        capacityUsed: seatQty,
+        ticketSelection: normalizedTicketSelection,
         amount: amount,
         currency: baseCurrency,
         depositAmount: 0,
@@ -164,6 +198,9 @@ const createCheckout = async (req, res) => {
         estimatedStripeFeeMinor: String(paymentSplit.estimatedStripeFeeMinor || 0),
         hostNetAmountMinor: String(paymentSplit.hostNetAmountMinor || 0),
         chargeModel: isServiceFee ? "DESTINATION_CHARGE" : "SEPARATE_CHARGE_AND_TRANSFER",
+        hasTicketTypes: hasStructuredTickets ? "true" : "false",
+        participantsCount: String(hasStructuredTickets ? ticketSummary.participantCount : seatQty),
+        capacityUsed: String(seatQty),
       },
     };
 
@@ -171,16 +208,29 @@ const createCheckout = async (req, res) => {
       mode: "payment",
       payment_method_types: ["card"],
       payment_intent_data: paymentIntentData,
-      line_items: [
-        {
-          price_data: {
-            currency: isServiceFee ? depositCurrency : baseCurrency,
-            product_data: { name: isServiceFee ? `Service fee for ${exp.title || "Experience"}` : exp.title || "Experience" },
-            unit_amount: unitAmount,
-          },
-          quantity: checkoutQuantity,
-        },
-      ],
+      line_items: hasStructuredTickets
+        ? normalizedTicketSelection
+            .filter((item) => Number(item.lineTotal || 0) > 0)
+            .map((item) => ({
+              price_data: {
+                currency: String(item.currency || baseCurrency).toLowerCase(),
+                product_data: {
+                  name: `${exp.title || "Experience"} · ${item.label}`,
+                },
+                unit_amount: Math.round(Number(item.unitPrice || 0) * 100),
+              },
+              quantity: Number(item.quantity || 0),
+            }))
+        : [
+            {
+              price_data: {
+                currency: isServiceFee ? depositCurrency : baseCurrency,
+                product_data: { name: isServiceFee ? `Service fee for ${exp.title || "Experience"}` : exp.title || "Experience" },
+                unit_amount: unitAmount,
+              },
+              quantity: checkoutQuantity,
+            },
+          ],
       success_url: successUrl,
       cancel_url: cancelUrl,
       metadata: {
@@ -189,10 +239,12 @@ const createCheckout = async (req, res) => {
         explorerId: (req.user?._id || req.user?.id)?.toString(),
         quantity: seatQty.toString(),
         checkoutQuantity: checkoutQuantity.toString(),
+        participantsCount: String(hasStructuredTickets ? ticketSummary.participantCount : seatQty),
         pricingMode,
         isDeposit: "false",
         isServiceFee: isServiceFee ? "true" : "false",
         chargeModel: isServiceFee ? "DESTINATION_CHARGE" : "SEPARATE_CHARGE_AND_TRANSFER",
+        hasTicketTypes: hasStructuredTickets ? "true" : "false",
       },
     });
 
@@ -208,6 +260,7 @@ const createCheckout = async (req, res) => {
         amount,
         totalAmount: amount,
         currency: isServiceFee ? depositCurrency : baseCurrency,
+        ticketSelectionSnapshot: normalizedTicketSelection,
         platformFee: platformFeeMinor,
         chargeModel: isServiceFee ? "DESTINATION_CHARGE" : "SEPARATE_CHARGE_AND_TRANSFER",
         hostFeeMode: paymentSplit.modeApplied,
