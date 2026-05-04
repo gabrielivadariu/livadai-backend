@@ -18,13 +18,16 @@ const Payment = require("../models/payment.model");
 
 const router = Router();
 
+const attendanceLegacyDisabled = (_req, res) =>
+  res.status(410).json({ message: "Attendance flow disabled. Experiences now complete automatically after they end." });
+
 router.post("/", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), createBooking);
 router.get("/me", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), getMyBookings);
 router.get("/host", authenticate, authorize(["HOST"]), getHostBookings);
 router.get("/host/experience/:experienceId", authenticate, authorize(["HOST", "BOTH"]), getHostBookingsByExperience);
-router.post("/:id/attendance", authenticate, authorize(["HOST"]), updateAttendance); // legacy
-router.post("/:id/confirm-attendance", authenticate, authorize(["HOST"]), confirmAttendance);
-router.post("/:id/no-show", authenticate, authorize(["HOST"]), markNoShow);
+router.post("/:id/attendance", authenticate, authorize(["HOST"]), attendanceLegacyDisabled);
+router.post("/:id/confirm-attendance", authenticate, authorize(["HOST"]), attendanceLegacyDisabled);
+router.post("/:id/no-show", authenticate, authorize(["HOST"]), attendanceLegacyDisabled);
 router.post("/:id/cancel-by-host", authenticate, authorize(["HOST", "BOTH"]), cancelBookingByHost);
 router.post("/:id/dispute", authenticate, authorize(["EXPLORER", "HOST", "BOTH"]), disputeBooking);
 router.post("/report-content", authenticate, reportContent);
@@ -44,7 +47,7 @@ router.post("/report-user", authenticate, reportUser);
     if (obj.experience?._id) {
       try {
         const bookedAgg = await Booking.aggregate([
-          { $match: { experience: booking.experience, status: { $in: ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"] } } },
+          { $match: { experience: booking.experience, status: { $in: ["PAID", "COMPLETED", "DEPOSIT_PAID", "AUTO_COMPLETED"] } } },
           { $group: { _id: "$experience", booked: { $sum: { $ifNull: ["$quantity", 1] } } } },
         ]);
         const booked = bookedAgg?.[0]?.booked || 0;

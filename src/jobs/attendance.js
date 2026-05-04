@@ -1,20 +1,14 @@
 const Booking = require("../models/booking.model");
 const Experience = require("../models/experience.model");
-const { createNotification } = require("../controllers/notifications.controller");
-const { sendEmail } = require("../utils/mailer");
-const { buildAttendanceReminderEmail, formatExperienceDate } = require("../utils/emailTemplates");
-const User = require("../models/user.model");
 
 const FALLBACK_EXPERIENCE_DURATION_MINUTES = 120;
 
 const setupAttendanceJob = () => {
   setInterval(async () => {
     const now = new Date();
-    const cutoff = new Date(now.getTime() - 48 * 60 * 60 * 1000);
     try {
       const bookings = await Booking.find({
         status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "CONFIRMED"] },
-        attendanceConfirmed: false,
       }).populate("experience", "endsAt endDate startsAt startDate host title");
 
       for (const bk of bookings) {
@@ -45,61 +39,13 @@ const setupAttendanceJob = () => {
         }
         if (!endDate || Number.isNaN(endDate.getTime())) continue;
 
-        if (endDate < cutoff) {
-          // auto-complete
+        if (endDate <= now) {
           bk.status = "AUTO_COMPLETED";
           bk.attendanceStatus = "CONFIRMED";
           bk.attendanceConfirmed = true;
           bk.completedAt = endDate;
           bk.payoutEligibleAt = new Date(endDate.getTime() + 72 * 60 * 60 * 1000);
           await bk.save();
-          if (bk.experience?.host) {
-            await createNotification({
-              user: bk.experience.host,
-              type: "ATTENDANCE_REQUIRED",
-              title: "Booking auto-completed",
-              message: `Booking for "${bk.experience.title}" was auto-completed after the confirmation window.`,
-              data: { bookingId: bk._id, activityId: bk.experience._id, activityTitle: bk.experience.title },
-            });
-          }
-        } else if (endDate < now) {
-          // still within 48h, remind host
-          if (bk.experience?.host) {
-            await createNotification({
-              user: bk.experience.host,
-              type: "ATTENDANCE_REQUIRED",
-              title: "Attendance confirmation pending",
-              message: `Please confirm attendance for "${bk.experience.title}" within 48h after it ends.`,
-              data: { bookingId: bk._id, activityId: bk.experience._id, activityTitle: bk.experience.title },
-            });
-
-            if (!bk.attendanceReminderEmailSent) {
-              try {
-                const hostUser = await User.findById(bk.experience.host).select("email");
-                if (hostUser?.email) {
-                  const appUrl = process.env.FRONTEND_URL || "https://www.livadai.com";
-                  const hostBookingsUrl = `${appUrl.replace(/\/$/, "")}/host/bookings`;
-                  const dateLabel = formatExperienceDate(bk.experience);
-                  const html = buildAttendanceReminderEmail({
-                    experience: bk.experience,
-                    bookingId: bk._id,
-                    ctaUrl: hostBookingsUrl,
-                  });
-                  await sendEmail({
-                    to: hostUser.email,
-                    subject: `Confirmă prezența: ${bk.experience?.title || "LIVADAI"} – ${dateLabel} (#${bk._id})`,
-                    html,
-                    type: "official",
-                    userId: hostUser._id,
-                  });
-                  bk.attendanceReminderEmailSent = true;
-                  await bk.save();
-                }
-              } catch (err) {
-                console.error("Attendance reminder email error", err);
-              }
-            }
-          }
         }
       }
     } catch (err) {
