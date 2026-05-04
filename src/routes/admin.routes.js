@@ -709,6 +709,20 @@ const serializeAdminBooking = (booking, extras = {}) => ({
   status: booking.status || "",
   attendanceStatus: booking.attendanceStatus || "",
   quantity: Number(booking.quantity || 1),
+  participantsCount: Number(booking.participantsCount || booking.quantity || 1),
+  capacityUsed: Number(booking.capacityUsed || booking.quantity || 1),
+  ticketSelection: Array.isArray(booking.ticketSelection)
+    ? booking.ticketSelection.map((row) => ({
+        key: row?.key || "",
+        label: row?.label || "",
+        quantity: Number(row?.quantity || 0),
+        unitPrice: Number(row?.unitPrice || 0),
+        lineTotal: Number(row?.lineTotal || 0),
+        currency: row?.currency || booking.currency || "ron",
+        isFree: !!row?.isFree,
+        countsTowardCapacity: row?.countsTowardCapacity !== false,
+      }))
+    : [],
   amount: Number(booking.amount || 0),
   currency: booking.currency || "ron",
   payoutEligibleAt: booking.payoutEligibleAt || null,
@@ -4376,7 +4390,9 @@ router.get("/bookings", async (req, res) => {
     const [payments, reportsAgg, messagesAgg] = bookingIds.length
       ? await Promise.all([
           Payment.find({ booking: { $in: bookingIds } })
-            .select("booking status paymentType amount totalAmount currency stripePaymentIntentId stripeSessionId")
+            .select(
+              "booking status paymentType amount totalAmount currency stripePaymentIntentId stripeSessionId stripeChargeId stripeTransferId platformFee transferAmount hostNetAmount estimatedStripeFee transferStatus"
+            )
             .sort({ createdAt: -1 })
             .lean(),
           Report.aggregate([
@@ -4401,6 +4417,13 @@ router.get("/bookings", async (req, res) => {
           currency: p.currency || "ron",
           hasStripePaymentIntent: !!p.stripePaymentIntentId,
           stripeSessionId: p.stripeSessionId || null,
+          stripeChargeId: p.stripeChargeId || null,
+          stripeTransferId: p.stripeTransferId || null,
+          platformFee: Number(p.platformFee || 0),
+          transferAmount: Number(p.transferAmount || 0),
+          hostNetAmount: Number(p.hostNetAmount || 0),
+          estimatedStripeFee: Number(p.estimatedStripeFee || 0),
+          transferStatus: p.transferStatus || "",
         });
       }
     }
@@ -4441,7 +4464,9 @@ router.get("/bookings/:id", async (req, res) => {
 
     const [payments, reports, messagesCount] = await Promise.all([
       Payment.find({ booking: booking._id })
-        .select("status paymentType amount totalAmount currency stripePaymentIntentId stripeSessionId stripeChargeId createdAt updatedAt")
+        .select(
+          "status paymentType amount totalAmount currency stripePaymentIntentId stripeSessionId stripeChargeId stripeTransferId platformFee transferAmount hostNetAmount estimatedStripeFee transferStatus createdAt updatedAt"
+        )
         .sort({ createdAt: -1 })
         .lean(),
       Report.find({ booking: booking._id })
@@ -4462,6 +4487,13 @@ router.get("/bookings/:id", async (req, res) => {
               currency: payments[0].currency || "ron",
               hasStripePaymentIntent: !!payments[0].stripePaymentIntentId,
               stripeSessionId: payments[0].stripeSessionId || null,
+              stripeChargeId: payments[0].stripeChargeId || null,
+              stripeTransferId: payments[0].stripeTransferId || null,
+              platformFee: Number(payments[0].platformFee || 0),
+              transferAmount: Number(payments[0].transferAmount || 0),
+              hostNetAmount: Number(payments[0].hostNetAmount || 0),
+              estimatedStripeFee: Number(payments[0].estimatedStripeFee || 0),
+              transferStatus: payments[0].transferStatus || "",
             }
           : null,
         reportsCount: reports.length,
