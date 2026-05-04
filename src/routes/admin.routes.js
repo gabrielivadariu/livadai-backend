@@ -1280,11 +1280,25 @@ const serializeAdminPaymentRecord = ({ payment, booking = null, experience = nul
     stripeChargeId: payment.stripeChargeId || null,
     stripeTransferId: payment.stripeTransferId || null,
     stripeTransferReversalId: payment.stripeTransferReversalId || null,
+    ticketSelectionSnapshot: Array.isArray(payment.ticketSelectionSnapshot)
+      ? payment.ticketSelectionSnapshot.map((row) => ({
+          key: row?.key || "",
+          label: row?.label || "",
+          quantity: Number(row?.quantity || 0),
+          unitPrice: Number(row?.unitPrice || 0),
+          lineTotal: Number(row?.lineTotal || 0),
+          currency: row?.currency || payment.currency || "ron",
+          isFree: !!row?.isFree,
+          countsTowardCapacity: row?.countsTowardCapacity !== false,
+        }))
+      : [],
     booking: booking
       ? {
           id: String(booking._id),
           status: booking.status || "",
           quantity: Number(booking.quantity || 1),
+          participantsCount: Number(booking.participantsCount || booking.quantity || 1),
+          capacityUsed: Number(booking.capacityUsed || booking.quantity || 1),
           attendanceStatus: booking.attendanceStatus || "",
           attendanceConfirmed: !!booking.attendanceConfirmed,
           completedAt: booking.completedAt || null,
@@ -1294,6 +1308,18 @@ const serializeAdminPaymentRecord = ({ payment, booking = null, experience = nul
           disputedAt: booking.disputedAt || null,
           disputeResolvedAt: booking.disputeResolvedAt || null,
           lastRefundAttemptAt: booking.lastRefundAttemptAt || null,
+          ticketSelection: Array.isArray(booking.ticketSelection)
+            ? booking.ticketSelection.map((row) => ({
+                key: row?.key || "",
+                label: row?.label || "",
+                quantity: Number(row?.quantity || 0),
+                unitPrice: Number(row?.unitPrice || 0),
+                lineTotal: Number(row?.lineTotal || 0),
+                currency: row?.currency || payment.currency || "ron",
+                isFree: !!row?.isFree,
+                countsTowardCapacity: row?.countsTowardCapacity !== false,
+              }))
+            : [],
         }
       : null,
     payoutEligibility: {
@@ -5666,12 +5692,15 @@ router.get("/payments", async (req, res) => {
     const [total, paymentRows] = await Promise.all([
       Payment.countDocuments(paymentQuery),
       Payment.find(paymentQuery)
+        .select(
+          "booking host explorer totalAmount amount currency platformFee transferAmount hostNetAmount estimatedStripeFee realStripeFee chargeModel status transferStatus transferReadyAt transferredAt transferFailureCode transferFailureMessage transferBlockedReason transferRetryCount lastTransferAttemptAt nextTransferRetryAt stripePaymentIntentId stripeSessionId stripeChargeId stripeTransferId stripeTransferReversalId ticketSelectionSnapshot createdAt updatedAt"
+        )
         .populate("host", "name displayName display_name email stripeAccountId isStripeChargesEnabled isStripePayoutsEnabled isStripeDetailsSubmitted")
         .populate("explorer", "name displayName display_name email")
         .populate({
           path: "booking",
           select:
-            "_id status quantity attendanceStatus attendanceConfirmed completedAt payoutEligibleAt refundedAt cancelledAt disputedAt disputeResolvedAt lastRefundAttemptAt host explorer experience",
+            "_id status quantity participantsCount capacityUsed ticketSelection attendanceStatus attendanceConfirmed completedAt payoutEligibleAt refundedAt cancelledAt disputedAt disputeResolvedAt lastRefundAttemptAt host explorer experience",
           populate: [
             {
               path: "experience",
