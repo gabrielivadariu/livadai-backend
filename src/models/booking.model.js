@@ -39,7 +39,6 @@ const bookingSchema = new mongoose.Schema(
     currency: { type: String, default: "eur" },
     depositAmount: { type: Number, default: 0 }, // minor units
     depositCurrency: { type: String },
-    attendanceStatus: { type: String, enum: ["PENDING", "CONFIRMED", "NO_SHOW"], default: "PENDING" },
     date: { type: Date },
     timeSlot: { type: String },
     status: {
@@ -54,14 +53,12 @@ const bookingSchema = new mongoose.Schema(
         "COMPLETED",
         "AUTO_COMPLETED",
         "NO_SHOW",
-        "PENDING_ATTENDANCE",
         "DISPUTED",
         "DISPUTE_WON",
         "DISPUTE_LOST",
       ],
       default: "PENDING",
     },
-    attendanceConfirmed: { type: Boolean, default: false },
     reminderSent: { type: Boolean, default: false },
     attendanceReminderEmailSent: { type: Boolean, default: false },
     completedAt: { type: Date },

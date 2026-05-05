@@ -104,7 +104,7 @@ const createCheckout = async (req, res) => {
     if (isFree) {
       const noShows = await Booking.countDocuments({
         explorer: req.user.id,
-        attendanceStatus: "NO_SHOW",
+        status: "NO_SHOW",
         createdAt: { $gte: thirtyDaysAgo },
       });
       if (noShows >= 2) {

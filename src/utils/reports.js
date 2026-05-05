@@ -44,7 +44,7 @@ const sendContentReportEmail = async ({ experience, reporter, reason, comment, r
       totalBookings = await Booking.countDocuments({ experience: experience._id });
       activeBookings = await Booking.countDocuments({
         experience: experience._id,
-        status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "COMPLETED", "AUTO_COMPLETED", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"] },
+        status: { $in: ["PAID", "DEPOSIT_PAID", "COMPLETED", "AUTO_COMPLETED", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"] },
       });
     } catch (err) {
       console.error("Report booking count error", err);
@@ -152,7 +152,7 @@ const sendDisputeEmail = async ({ booking, experience, host, explorer, reason, c
       totalBookings = await Booking.countDocuments({ experience: experience._id });
       activeBookings = await Booking.countDocuments({
         experience: experience._id,
-        status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "COMPLETED", "AUTO_COMPLETED", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"] },
+        status: { $in: ["PAID", "DEPOSIT_PAID", "COMPLETED", "AUTO_COMPLETED", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"] },
       });
     } catch (err) {
       console.error("Report booking count error", err);

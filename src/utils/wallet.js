@@ -20,7 +20,7 @@ const aggregateHostBalances = async (hostId) => {
       continue;
     }
 
-    if (["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"].includes(bk.status)) {
+    if (["PAID", "DEPOSIT_PAID", "CONFIRMED"].includes(bk.status)) {
       pending += amt;
       continue;
     }
