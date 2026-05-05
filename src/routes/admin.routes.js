@@ -30,6 +30,7 @@ const {
   buildStripeFeeConfig,
   calculateHostFeeBreakdown,
 } = require("../utils/hostFeePolicy");
+const { normalizeExperienceTicketTypes } = require("../utils/ticketTypes");
 const { refundPaymentRecord } = require("../utils/stripeRefunds");
 const { authenticate, requireAdminAllowlist, requireAdminCapability, requireOwnerAdmin } = require("../middleware/auth.middleware");
 const {
@@ -689,6 +690,20 @@ const serializeAdminExperience = (exp, participantsByExperience = new Map(), ove
   maxParticipants: exp.maxParticipants ?? 0,
   remainingSpots: exp.remainingSpots ?? 0,
   soldOut: !!exp.soldOut,
+  pricingMode: exp.pricingMode || "PER_PERSON",
+  groupPackageSize: exp.groupPackageSize ?? null,
+  ticketTypes: Array.isArray(exp.ticketTypes)
+    ? exp.ticketTypes.map((item) => ({
+        key: item?.key || "",
+        label: item?.label || "",
+        price: Number(item?.price || 0),
+        currency: item?.currency || exp.currencyCode || "RON",
+        isFree: item?.isFree === true || Number(item?.price || 0) <= 0,
+        countsTowardCapacity: item?.countsTowardCapacity !== false,
+        active: item?.active !== false,
+        order: Number.isFinite(Number(item?.order)) ? Number(item.order) : 0,
+      }))
+    : [],
   createdAt: exp.createdAt,
   updatedAt: exp.updatedAt,
   host: exp.host
@@ -3274,6 +3289,8 @@ router.get("/experiences/:id", async (req, res) => {
           "description",
           "category",
           "price",
+          "pricingMode",
+          "groupPackageSize",
           "durationMinutes",
           "currencyCode",
           "activityType",
@@ -3301,9 +3318,12 @@ router.get("/experiences/:id", async (req, res) => {
           "location",
           "mainImageUrl",
           "coverImageUrl",
+          "coverFocusX",
+          "coverFocusY",
           "images",
           "videos",
           "mediaRefs",
+          "ticketTypes",
           "languages",
           "isActive",
           "reminderHostSent",
@@ -3582,9 +3602,10 @@ router.patch("/experiences/:id", requireAdminCapability(ADMIN_CAPABILITIES.EXPER
       address,
       latitude,
       longitude,
-      languages,
-      mainImageUrl,
-      coverImageUrl,
+        languages,
+        ticketTypes,
+        mainImageUrl,
+        coverImageUrl,
       images,
       videos,
       coverFocusX,
@@ -3732,6 +3753,30 @@ router.patch("/experiences/:id", requireAdminCapability(ADMIN_CAPABILITIES.EXPER
         diff.groupPackageSize = { from: Number(exp.groupPackageSize || 0), to: normalized === undefined ? null : Number(normalized) };
       }
       exp.groupPackageSize = normalized === undefined ? null : Number(normalized);
+    }
+
+    if (ticketTypes !== undefined) {
+      if (!Array.isArray(ticketTypes)) {
+        return res.status(400).json({ message: "ticketTypes must be an array" });
+      }
+      const normalizedTicketTypes = normalizeExperienceTicketTypes(ticketTypes, {
+        defaultCurrency: exp.currencyCode || "RON",
+      });
+      if (normalizedTicketTypes?.error) {
+        return res.status(normalizedTicketTypes.status || 400).json({ message: normalizedTicketTypes.error });
+      }
+      const nextTicketTypes = Array.isArray(normalizedTicketTypes.ticketTypes) ? normalizedTicketTypes.ticketTypes : [];
+      diff.ticketTypes = {
+        from: Array.isArray(exp.ticketTypes) ? exp.ticketTypes.length : 0,
+        to: nextTicketTypes.length,
+      };
+      exp.ticketTypes = nextTicketTypes;
+      if (nextTicketTypes.length) {
+        exp.pricingMode = "PER_PERSON";
+        exp.groupPackageSize = null;
+        const paidTicketPrices = nextTicketTypes.filter((item) => !item.isFree).map((item) => Number(item.price || 0));
+        exp.price = paidTicketPrices.length ? Math.min(...paidTicketPrices) : 0;
+      }
     }
 
     if (activityType !== undefined) {
@@ -3951,6 +3996,7 @@ router.patch("/experiences/:id", requireAdminCapability(ADMIN_CAPABILITIES.EXPER
         sibling.pricingMode = exp.pricingMode;
         sibling.groupPackageSize = exp.groupPackageSize;
         sibling.price = exp.price;
+        sibling.ticketTypes = Array.isArray(exp.ticketTypes) ? exp.ticketTypes.map((item) => ({ ...item })) : [];
         sibling.activityType = exp.activityType;
         sibling.environment = exp.environment;
         sibling.country = exp.country;
