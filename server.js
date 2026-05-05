@@ -34,6 +34,7 @@ const setupRefundRetryJob = require("./src/jobs/refund-retry");
 const setupFavoritesCleanupJob = require("./src/jobs/favorites-cleanup");
 const setupScheduledHostDeletionsJob = require("./src/jobs/scheduled-host-deletions");
 const setupHostTransferReleaseJob = require("./src/jobs/host-transfer-release");
+const setupLegacyAttendanceCleanupJob = require("./src/jobs/legacy-attendance-cleanup");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -75,6 +76,7 @@ app.use((req, res) => {
 const start = async () => {
   try {
     await connectDB();
+    await setupLegacyAttendanceCleanupJob();
     app.listen(PORT, () => console.log(`API running on port ${PORT}`));
     setupReminderJob();
     setupCleanupJob();

@@ -8,9 +8,7 @@ const setupAttendanceJob = () => {
     const now = new Date();
     try {
       const bookings = await Booking.find({
-        // Keep legacy PENDING_ATTENDANCE here only as a silent compatibility
-        // fallback so old records can still auto-complete.
-        status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "CONFIRMED"] },
+        status: { $in: ["PAID", "DEPOSIT_PAID", "CONFIRMED"] },
       }).populate("experience", "endsAt endDate startsAt startDate host title");
 
       for (const bk of bookings) {
