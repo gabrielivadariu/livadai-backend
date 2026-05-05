@@ -7,7 +7,6 @@ const CANCELLATION_BOOKING_STATUSES = new Set(["CANCELLED", "REFUNDED", "REFUND_
 const OCCUPIED_BOOKING_STATUSES = [
   "PAID",
   "DEPOSIT_PAID",
-  "PENDING_ATTENDANCE",
   "COMPLETED",
   "AUTO_COMPLETED",
   "NO_SHOW",
@@ -167,7 +166,7 @@ const setupCleanupJob = () => {
     try {
       const mediaCutoff = new Date(now.getTime() - 72 * 60 * 60 * 1000);
       const closedStatuses = ["COMPLETED", "CANCELLED", "REFUNDED", "REFUND_FAILED", "AUTO_COMPLETED", "NO_SHOW", "DISPUTE_WON", "DISPUTE_LOST"];
-      const activeStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "PENDING_ATTENDANCE", "DISPUTED"];
+      const activeStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "DISPUTED"];
       const closedBookings = await Booking.find({
         status: { $in: closedStatuses },
       }).populate(

@@ -25,7 +25,6 @@ const isParticipant = (booking, userId) => {
 const CHAT_STATUSES = new Set([
   "PAID",
   "DEPOSIT_PAID",
-  "PENDING_ATTENDANCE",
   "COMPLETED",
   "AUTO_COMPLETED",
   "NO_SHOW",

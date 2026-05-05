@@ -8,6 +8,8 @@ const setupAttendanceJob = () => {
     const now = new Date();
     try {
       const bookings = await Booking.find({
+        // Keep legacy PENDING_ATTENDANCE here only as a silent compatibility
+        // fallback so old records can still auto-complete.
         status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "CONFIRMED"] },
       }).populate("experience", "endsAt endDate startsAt startDate host title");
 
@@ -41,8 +43,6 @@ const setupAttendanceJob = () => {
 
         if (endDate <= now) {
           bk.status = "AUTO_COMPLETED";
-          bk.attendanceStatus = "CONFIRMED";
-          bk.attendanceConfirmed = true;
           bk.completedAt = endDate;
           bk.payoutEligibleAt = new Date(endDate.getTime() + 72 * 60 * 60 * 1000);
           await bk.save();

@@ -21,7 +21,6 @@ const reviewEligibleStatuses = new Set([
   "AUTO_COMPLETED",
   "PAID",
   "DEPOSIT_PAID",
-  "PENDING_ATTENDANCE",
   "CONFIRMED",
 ]);
 const pendingBookingStatuses = new Set(["PENDING", "CONFIRMED"]);
@@ -34,7 +33,6 @@ const bookingStatusPriority = {
   COMPLETED: 95,
   AUTO_COMPLETED: 90,
   NO_SHOW: 85,
-  PENDING_ATTENDANCE: 80,
   PAID: 70,
   DEPOSIT_PAID: 65,
   CANCELLED: 60,
@@ -352,7 +350,7 @@ const cancelBookingByHost = async (req, res) => {
     }
 
     // Refund if payment exists
-    if (["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"].includes(booking.status)) {
+    if (["PAID", "DEPOSIT_PAID", "CONFIRMED"].includes(booking.status)) {
       const payment = await Payment.findOne({ booking: booking._id, status: { $in: ["CONFIRMED", "INITIATED"] } });
       if (payment) {
         try {

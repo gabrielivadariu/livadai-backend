@@ -43,11 +43,11 @@ const {
 } = require("../utils/adminRoles");
 
 const router = Router();
-const cleanupActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "PENDING_ATTENDANCE", "DISPUTED"];
-const adminBookingActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "DISPUTED"];
-const adminParticipantStatuses = ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "COMPLETED", "AUTO_COMPLETED"];
+const cleanupActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "DISPUTED"];
+const adminBookingActiveStatuses = ["PENDING", "PAID", "DEPOSIT_PAID", "CONFIRMED", "DISPUTED"];
+const adminParticipantStatuses = ["PAID", "DEPOSIT_PAID", "COMPLETED", "AUTO_COMPLETED", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"];
 const allowedUserRoles = ALL_USER_ROLES;
-const adminBookingPaidStatuses = ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "DISPUTED"];
+const adminBookingPaidStatuses = ["PAID", "DEPOSIT_PAID", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"];
 const adminBookingFinalStatuses = ["CANCELLED", "REFUNDED", "COMPLETED", "AUTO_COMPLETED", "NO_SHOW"];
 const adminRateLimitState = new Map();
 const ADMIN_RATE_LIMIT_WINDOW_MS = Number(process.env.ADMIN_RATE_LIMIT_WINDOW_MS || 60_000);
@@ -66,7 +66,7 @@ const ADMIN_EDITABLE_EXPERIENCE_STATUSES = new Set(["draft", "published", "cance
 const ADMIN_ACTIVITY_TYPES = new Set(["INDIVIDUAL", "GROUP"]);
 const ADMIN_ENVIRONMENTS = new Set(["INDOOR", "OUTDOOR", "BOTH"]);
 const ADMIN_PRICING_MODES = new Set(["PER_PERSON", "PER_GROUP"]);
-const ADMIN_BOOKING_OCCUPIED_STATUSES = ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "COMPLETED", "AUTO_COMPLETED", "NO_SHOW", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"];
+const ADMIN_BOOKING_OCCUPIED_STATUSES = ["PAID", "DEPOSIT_PAID", "COMPLETED", "AUTO_COMPLETED", "NO_SHOW", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"];
 
 const hasExperienceMedia = (exp) =>
   !!(
@@ -707,7 +707,6 @@ const isObjectIdLike = (value) => /^[a-f\d]{24}$/i.test(String(value || ""));
 const serializeAdminBooking = (booking, extras = {}) => ({
   id: String(booking._id),
   status: booking.status || "",
-  attendanceStatus: booking.attendanceStatus || "",
   quantity: Number(booking.quantity || 1),
   participantsCount: Number(booking.participantsCount || booking.quantity || 1),
   capacityUsed: Number(booking.capacityUsed || booking.quantity || 1),
@@ -1313,8 +1312,6 @@ const serializeAdminPaymentRecord = ({ payment, booking = null, experience = nul
           quantity: Number(booking.quantity || 1),
           participantsCount: Number(booking.participantsCount || booking.quantity || 1),
           capacityUsed: Number(booking.capacityUsed || booking.quantity || 1),
-          attendanceStatus: booking.attendanceStatus || "",
-          attendanceConfirmed: !!booking.attendanceConfirmed,
           completedAt: booking.completedAt || null,
           payoutEligibleAt: booking.payoutEligibleAt || null,
           refundedAt: booking.refundedAt || null,
@@ -1588,7 +1585,7 @@ const applyDisableExperience = async (experienceId) => {
   await exp.save();
   const bookings = await Booking.find({
     experience: experienceId,
-    status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"] },
+    status: { $in: ["PAID", "DEPOSIT_PAID", "CONFIRMED"] },
   }).populate("explorer", "email name displayName");
   const hostUser = await User.findById(exp.host).select("email name displayName");
   const appUrl = process.env.FRONTEND_URL || "https://www.livadai.com";
@@ -1649,7 +1646,7 @@ const applyBanHost = async (hostId) => {
   await Experience.updateMany({ host: hostId }, { isActive: false, status: "DISABLED", soldOut: true, remainingSpots: 0 });
   const bookings = await Booking.find({
     host: hostId,
-    status: { $in: ["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"] },
+    status: { $in: ["PAID", "DEPOSIT_PAID", "CONFIRMED"] },
   });
   for (const b of bookings) {
     await refundBooking(b, "Host banned by admin");
@@ -5732,7 +5729,7 @@ router.get("/payments", async (req, res) => {
         .populate({
           path: "booking",
           select:
-            "_id status quantity participantsCount capacityUsed ticketSelection attendanceStatus attendanceConfirmed completedAt payoutEligibleAt refundedAt cancelledAt disputedAt disputeResolvedAt lastRefundAttemptAt host explorer experience",
+            "_id status quantity participantsCount capacityUsed ticketSelection completedAt payoutEligibleAt refundedAt cancelledAt disputedAt disputeResolvedAt lastRefundAttemptAt host explorer experience",
           populate: [
             {
               path: "experience",

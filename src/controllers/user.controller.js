@@ -231,7 +231,7 @@ const canDeleteAccount = async (user) => {
       status: "published",
       endsAt: { $gte: now },
     });
-    const activeBookingStatuses = ["PENDING", "DEPOSIT_PAID", "PAID", "PENDING_ATTENDANCE", "DISPUTED"];
+    const activeBookingStatuses = ["PENDING", "CONFIRMED", "DEPOSIT_PAID", "PAID", "DISPUTED"];
     const activeBookingCount = await Booking.countDocuments({
       host: user._id,
       status: { $in: activeBookingStatuses },

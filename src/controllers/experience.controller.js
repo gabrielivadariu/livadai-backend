@@ -21,7 +21,7 @@ const { refundPaymentRecord } = require("../utils/stripeRefunds");
 const { normalizeExperienceTicketTypes } = require("../utils/ticketTypes");
 
 const MAX_RECURRING_OCCURRENCES = 240;
-const BOOKING_STATUSES_COUNTED = ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"];
+const BOOKING_STATUSES_COUNTED = ["PAID", "COMPLETED", "AUTO_COMPLETED", "DEPOSIT_PAID", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"];
 
 const formatDateKey = (dateValue) => {
   const date = toDateSafe(dateValue);
@@ -774,7 +774,7 @@ const processHostExperienceAutoAction = async (exp, hostId) => {
       console.error("Cancel notice notification error", err);
     }
 
-    if (["PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE"].includes(bk.status)) {
+    if (["PAID", "DEPOSIT_PAID", "CONFIRMED"].includes(bk.status)) {
       let refunded = false;
       const payments = await Payment.find({ booking: bk._id, status: "CONFIRMED" });
       for (const pay of payments) {
@@ -1224,7 +1224,7 @@ const getExperienceById = async (req, res) => {
     const isDisabled = exp.isActive === false || exp.status === "DISABLED";
     if (isDisabled) {
       if (req.user?.id) {
-        const allowedStatuses = ["PAID", "DEPOSIT_PAID", "COMPLETED", "PENDING_ATTENDANCE"];
+        const allowedStatuses = ["PAID", "DEPOSIT_PAID", "COMPLETED", "AUTO_COMPLETED", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"];
         const hasBooking = await Booking.findOne({
           experience: exp._id,
           status: { $in: allowedStatuses },

@@ -9,7 +9,6 @@ const { logMediaDeletion } = require("../utils/mediaDeletionLog");
 const bookingStatusesForStats = new Set([
   "PAID",
   "DEPOSIT_PAID",
-  "PENDING_ATTENDANCE",
   "COMPLETED",
   "AUTO_COMPLETED",
   "NO_SHOW",
@@ -17,9 +16,9 @@ const bookingStatusesForStats = new Set([
   "DISPUTE_WON",
   "DISPUTE_LOST",
 ]);
-const reviewAllowedBookingStatuses = new Set(["COMPLETED", "AUTO_COMPLETED", "PAID", "DEPOSIT_PAID", "PENDING_ATTENDANCE", "CONFIRMED"]);
+const reviewAllowedBookingStatuses = new Set(["COMPLETED", "AUTO_COMPLETED", "PAID", "DEPOSIT_PAID", "CONFIRMED"]);
 const FALLBACK_EXPERIENCE_DURATION_MINUTES = 120;
-const bookingStatusesForAvailability = ["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"];
+const bookingStatusesForAvailability = ["PAID", "COMPLETED", "DEPOSIT_PAID", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"];
 
 const toDateSafe = (value) => {
   if (!value) return null;
@@ -107,7 +106,7 @@ const getHostProfile = async (req, res) => {
       phone = user.phone || "";
       canViewPhone = true;
     } else if (viewerId) {
-      const allowedStatuses = new Set(["PAID", "COMPLETED", "DEPOSIT_PAID", "PENDING_ATTENDANCE"]);
+      const allowedStatuses = new Set(["PAID", "COMPLETED", "DEPOSIT_PAID", "AUTO_COMPLETED", "DISPUTED", "DISPUTE_WON", "DISPUTE_LOST"]);
       const booking = await Booking.findOne({
         host: id,
         explorer: viewerId,
